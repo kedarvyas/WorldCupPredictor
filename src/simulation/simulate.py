@@ -92,10 +92,13 @@ def build_prob_tables(model, state):
     return table
 
 
-def scoreline_sampler(rng):
-    """Empirical scoreline distributions conditional on outcome, 2010+."""
+def scoreline_sampler(rng, before=None):
+    """Empirical scoreline distributions conditional on outcome, 2010+.
+    `before` caps the window for as-of backtests (no future scorelines)."""
     m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
     m = m[m["date"] >= "2010-01-01"]
+    if before is not None:
+        m = m[m["date"] < before]
     gd = m["home_score"] - m["away_score"]
     outcomes = np.select([gd > 0, gd < 0], ["win", "loss"], "draw")
     dists = {}
