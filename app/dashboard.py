@@ -21,7 +21,7 @@ from src.config import DATA_PROCESSED, MODELS_DIR  # noqa: E402
 from src.features.elo import match_tier  # noqa: E402
 from src.models.train import TIERS, proba_in_class_order  # noqa: E402
 from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
-from src.simulation.simulate import team_state  # noqa: E402
+from src.simulation.simulate import build_prob_tables, team_state  # noqa: E402
 
 REPORTS = ROOT / "reports"
 ROUND_LABELS = {"group_top2": "Top 2 in group", "third_qualified": "Best-8 third",
@@ -65,6 +65,62 @@ def scoreline_dists():
         tot = sum(c.values())
         dists[o] = {s: n / tot for s, n in c.items()}
     return dists
+
+
+@st.cache_data
+def fixture_predictions() -> pd.DataFrame:
+    """All 72 group fixtures with model probabilities and the exact
+    (analytic) top scorelines: outcome probs x scoreline-given-outcome.
+    Same distributions the Monte Carlo samples, without sampling noise."""
+    probs = build_prob_tables(load_model(), load_state())
+    dists = scoreline_dists()
+    members = {t: g for g, ts in GROUPS.items() for t in ts}
+    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv",
+                     parse_dates=["date"])
+    rows = []
+    for r in fx.itertuples():
+        p = probs[(r.home_team, r.away_team)]
+        mix = Counter()
+        for o, pi in zip(("win", "draw", "loss"), p):
+            for s, q in dists[o].items():
+                mix[s] += pi * q
+        top = mix.most_common(2)
+        rows.append({
+            "date": r.date.date(), "group": members[r.home_team],
+            "match": f"{r.home_team} vs {r.away_team}",
+            "venue": f"{r.city} ({r.country})",
+            "home %": p[0], "draw %": p[1], "away %": p[2],
+            "likeliest score": f"{top[0][0][0]}-{top[0][0][1]}"
+                               f"  ({top[0][1]:.0%})",
+            "second": f"{top[1][0][0]}-{top[1][0][1]}  ({top[1][1]:.0%})",
+        })
+    return pd.DataFrame(rows).sort_values(["date", "group"])
+
+
+def view_schedule():
+    st.header("Group-stage schedule & predictions")
+    st.caption("All 72 fixtures, June 11–27. Probabilities are the exact "
+               "model outputs the simulation samples from; scorelines are "
+               "outcome-conditional modern-era distributions (not "
+               "team-specific — see Model card). 'Home' = first-listed team; "
+               "true home advantage applies only to USA/Mexico/Canada.")
+    fx = fixture_predictions()
+    c1, c2 = st.columns(2)
+    g = c1.selectbox("Group", ["All"] + list(GROUPS))
+    days = ["All"] + sorted({str(d) for d in fx["date"]})
+    d = c2.selectbox("Date", days)
+    show = fx
+    if g != "All":
+        show = show[show["group"] == g]
+    if d != "All":
+        show = show[show["date"].astype(str) == d]
+    st.dataframe(
+        show.reset_index(drop=True)  # Styler needs a UNIQUE index
+            .style.format({"home %": "{:.0%}", "draw %": "{:.0%}",
+                           "away %": "{:.0%}"})
+            .background_gradient(subset=["home %", "draw %", "away %"],
+                                 cmap="Blues", vmin=0, vmax=0.85),
+        height=600, use_container_width=True, hide_index=True)
 
 
 def predict_pair(team_a, team_b, venue, tier):
@@ -237,6 +293,7 @@ forecast uses σ=0 and the slider is provided as sensitivity analysis.
 
 
 PAGES = {"🏆 Tournament odds": view_tournament,
+         "📅 Schedule & predictions": view_schedule,
          "⚔️ Match explorer": view_match,
          "📋 Model card": view_model_card}
 
