@@ -17,6 +17,16 @@ MODELS_DIR = PROJECT_ROOT / "models"
 # (Slug still says "2017" but the dataset is actively updated.)
 KAGGLE_DATASET = "martj42/international-football-results-from-1872-to-2017"
 
+# --- Temporal split ---------------------------------------------------------
+# Train on matches before this date, validate on matches after. Chosen so
+# validation contains a full World Cup cycle (WC2022 + Euro/Copa 2024) and
+# avoids COVID empty-stadium matches straddling the boundary.
+VALIDATION_START = "2022-01-01"
+
+# FIFA rankings snapshot (Kaggle, cashncarry/fifaworldranking) ends here;
+# rank-based comparisons are restricted to matches before this date.
+FIFA_RANKS_END = "2024-06-20"
+
 # --- Modeling hyperparameters (tuned later; defaults to start) -------------
 # Training-window start year is a hyperparameter: compare 1990 / 2000 / 2010
 # by validation log-loss in Phase 4. Full history before this is used only
