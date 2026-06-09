@@ -1,0 +1,22 @@
+# Environment
+.venv/
+
+# Data — raw is re-downloadable, processed is re-generatable
+data/raw/
+data/processed/
+
+# Model artifacts
+models/*.joblib
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Python
+__pycache__/
+*.pyc
+
+# OS
+.DS_Store
+
+# Credentials — never commit
+kaggle.json
