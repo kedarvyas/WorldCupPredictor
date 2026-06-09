@@ -1,0 +1,20 @@
+{
+  "config": "LR window 2010+",
+  "features": [
+    "elo_diff",
+    "neutral",
+    "tier_world_cup",
+    "tier_continental",
+    "tier_qualifier",
+    "tier_friendly",
+    "ppg_diff",
+    "gd_form_diff",
+    "rest_diff"
+  ],
+  "classes_order": [
+    "home_win",
+    "draw",
+    "away_win"
+  ],
+  "validation_log_loss": 0.8707
+}
