@@ -586,6 +586,106 @@ def view_market():
                    "title odds.")
 
 
+def view_betting():
+    st.header("Betting board — paper trading")
+    st.caption("**Educational scorekeeping, not income.** Model prices vs "
+               "book odds you enter; the ledger settles itself against real "
+               "results. Remember: edges shown are vs *your entered odds* — "
+               "the book's margin (~5-7%) and the squad information it "
+               "prices (see Market vs models: France) are exactly what we "
+               "must beat. Expectation set by the model card, not hype.")
+
+    from src.models.betting import (append_bet, edge, kelly_fraction,
+                                    load_ledger, settle)
+    from src.models.recalibrate import apply as recal_apply
+    from src.models.recalibrate import load_params, over25_prob
+
+    results = current_results()
+    locked, _ = locked_predictions(str(LOCK_PATH))
+    upcoming = locked[~locked.apply(
+        lambda r: (r["home_team"], r["away_team"]) in results, axis=1)]
+    if upcoming.empty:
+        st.info("No unplayed group fixtures left.")
+    else:
+        labels = [f"{r.date} — {r.home_team} vs {r.away_team} (Group {r.group})"
+                  for r in upcoming.itertuples()]
+        pick = st.selectbox("Fixture", labels)
+        row = upcoming.iloc[labels.index(pick)]
+        home, away = row["home_team"], row["away_team"]
+
+        dc = fitted_dc()
+        fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures_frozen.csv")
+        neutral = bool(fx[(fx["home_team"] == home)
+                          & (fx["away_team"] == away)]["neutral"].iloc[0])
+        p_over = float(recal_apply(
+            over25_prob(dc, home, away, true_home=not neutral),
+            load_params()))
+        M = dc.score_matrix(home, away, true_home=not neutral)
+        flat = sorted(((f"{i}-{j}", M[i, j]) for i in range(7)
+                       for j in range(7)), key=lambda t: -t[1])[:3]
+
+        c0, c1 = st.columns([1, 3])
+        bankroll = c0.number_input("Paper bankroll", value=1000.0, step=100.0)
+        kelly_mult = c0.selectbox("Kelly fraction", [0.25, 0.5, 1.0],
+                                  help="Full Kelly assumes the model "
+                                       "probability is exactly right. "
+                                       "It isn't. Bet smaller.")
+
+        markets = {
+            "1X2": {f"{home} (home)": ("home", row["p_home"]),
+                    "Draw": ("draw", row["p_draw"]),
+                    f"{away} (away)": ("away", row["p_away"])},
+            "O/U 2.5": {"Over 2.5": ("over", p_over),
+                        "Under 2.5": ("under", 1 - p_over)},
+            "Correct score": {f"{s}": (s, p) for s, p in flat},
+        }
+        engines = {"1X2": "locked champion forecast",
+                   "O/U 2.5": "DC matrix + recalibration",
+                   "Correct score": "DC matrix — display-grade only"}
+        with c1:
+            for mkt, sels in markets.items():
+                st.markdown(f"**{mkt}** · *{engines[mkt]}*")
+                cols = st.columns(len(sels))
+                for col, (label, (sel, p)) in zip(cols, sels.items()):
+                    with col:
+                        st.metric(label, f"{p:.1%}",
+                                  help="model probability")
+                        odds = st.number_input(
+                            "odds", min_value=1.01, value=round(1 / p, 2)
+                            if p > 0.02 else 50.0, step=0.05,
+                            key=f"odds_{mkt}_{sel}",
+                            label_visibility="collapsed")
+                        e = edge(p, odds)
+                        stake = round(bankroll * kelly_mult
+                                      * kelly_fraction(p, odds), 2)
+                        st.caption(f"edge {e:+.1%} · stake {stake:.0f}")
+                        if e > 0 and st.button("Log bet",
+                                               key=f"log_{mkt}_{sel}"):
+                            append_bet(home, away, mkt, sel, odds, p, stake)
+                            st.success(f"Logged: {label} @ {odds}")
+
+    st.divider()
+    st.subheader("Paper ledger")
+    ledger = load_ledger()
+    if ledger.empty:
+        st.info("No paper bets yet. Log one above — the ledger settles "
+                "itself as results arrive.")
+        return
+    settled = settle(ledger, results)
+    done = settled[settled["status"] != "pending"]
+    c1, c2, c3, c4 = st.columns(4)
+    c1.metric("Bets", f"{len(settled)} ({len(done)} settled)")
+    c2.metric("Staked (settled)", f"{done['stake'].sum():.0f}")
+    c3.metric("P/L", f"{done['profit'].sum():+.0f}")
+    roi = (done["profit"].sum() / done["stake"].sum()
+           if done["stake"].sum() else 0)
+    c4.metric("ROI", f"{roi:+.1%}",
+              help="Break-even means the model roughly priced the matches "
+                   "as well as your book net of its margin — already a "
+                   "strong result for a results-only model.")
+    st.dataframe(settled.iloc[::-1], height=320, hide_index=True)
+
+
 def view_model_card():
     st.header("Model card")
     st.markdown(f"""
@@ -661,6 +761,7 @@ PAGES = {"🏆 Tournament odds": view_tournament,
          "🧮 Live simulator": view_live_sim,
          "⚔️ Match explorer": view_match,
          "📈 Market vs models": view_market,
+         "🎟️ Betting board": view_betting,
          "📋 Model card": view_model_card}
 
 st.sidebar.title("WC2026 Predictor")
