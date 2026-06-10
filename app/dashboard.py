@@ -48,9 +48,12 @@ def load_state():
 
 
 @st.cache_data
-def load_sim(sigma: int) -> pd.DataFrame | None:
-    path = (REPORTS / "sim_2026.csv" if sigma == 0
-            else REPORTS / f"sim_2026_sigma{sigma}.csv")
+def load_sim(sigma: int, dc: bool = False) -> pd.DataFrame | None:
+    if dc:
+        path = REPORTS / "sim_2026_dc.csv"
+    else:
+        path = (REPORTS / "sim_2026.csv" if sigma == 0
+                else REPORTS / f"sim_2026_sigma{sigma}.csv")
     if not path.exists():
         return None
     return pd.read_csv(path, index_col=0)
@@ -243,20 +246,36 @@ def predict_pair(team_a, team_b, venue, tier):
 
 def view_tournament():
     st.header("Tournament odds — 10,000 simulated World Cups")
-    sigma = st.select_slider(
-        "Rating uncertainty σ (Elo points jittered per simulated tournament)",
-        options=[0, 50, 100, 150], value=0,
-        help="σ=0 is the primary published forecast. Higher σ models more "
-             "pre-tournament uncertainty about true team strength; favorites "
-             "shrink toward the field. The WC2022 backtest found no clear "
-             "evidence favoring any value — see the Model card.")
-    if sigma == 0:
-        st.caption("**Primary published numbers** (σ=0, ratings frozen at "
-                   "tournament start).")
-    sim = load_sim(sigma)
+    model_choice = st.selectbox(
+        "Forecast model", list(MODEL_LOCKS),
+        help="Champion = Elo + logistic regression (better validation "
+             "log-loss; the primary published numbers). Challenger = "
+             "Dixon-Coles: outcomes AND scorelines from team-specific "
+             "score matrices, so group tiebreakers use team-specific goal "
+             "differences. The models disagree substantially about title "
+             "odds — an honest display of model risk, not a bug.")
+    use_dc = "Dixon" in model_choice
+    if use_dc:
+        sigma = 0
+        st.caption("Challenger numbers (Dixon-Coles). The champion remains "
+                   "the primary published forecast; σ-sweep applies to the "
+                   "champion only.")
+    else:
+        sigma = st.select_slider(
+            "Rating uncertainty σ (Elo points jittered per simulated tournament)",
+            options=[0, 50, 100, 150], value=0,
+            help="σ=0 is the primary published forecast. Higher σ models more "
+                 "pre-tournament uncertainty about true team strength; favorites "
+                 "shrink toward the field. The WC2022 backtest found no clear "
+                 "evidence favoring any value — see the Model card.")
+        if sigma == 0:
+            st.caption("**Primary published numbers** (σ=0, ratings frozen at "
+                       "tournament start).")
+    sim = load_sim(sigma, dc=use_dc)
     if sim is None:
-        st.warning(f"σ={sigma} sweep not yet computed — run "
-                   "`python -m src.simulation.sweep`.")
+        st.warning("Simulation output missing — run "
+                   "`python -m src.simulation.simulate"
+                   + (" --dc`." if use_dc else "` / sweep."))
         return
 
     left, right = st.columns([2, 3])

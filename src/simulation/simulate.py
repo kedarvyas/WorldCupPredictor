@@ -12,13 +12,15 @@ Modeling choices (confirmed):
   in EDA. Hosts get genuine home treatment in all their matches.
 - Knockout draws -> strength-weighted coin flip: P(A wins ET/pens) =
   P(A win) / (P(A win) + P(B win)).
-- Scorelines (needed for GD/goals tiebreakers) are sampled from the
-  empirical modern-era scoreline distribution conditional on the sampled
-  outcome. Fair-play tiebreaker unavailable -> drawing of lots (random).
-  (A Dixon-Coles goals model would generate scores natively — stretch goal.)
+- Scorelines (needed for GD/goals tiebreakers): champion samples the
+  empirical modern-era distribution conditional on the sampled outcome
+  (team-blind); with --dc, outcomes AND scorelines come from the fitted
+  Dixon-Coles tau-corrected score matrix per pairing (team-specific, and
+  mutually consistent by construction). Fair-play tiebreaker unavailable
+  -> drawing of lots (random).
 
 Usage:
-    .venv/bin/python -m src.simulation.simulate [n_sims]
+    .venv/bin/python -m src.simulation.simulate [n_sims] [--dc]
 """
 
 import sys
@@ -109,11 +111,48 @@ def scoreline_sampler(rng, before=None):
         w = np.array(list(counts.values()), dtype=float)
         dists[oc] = (lines, w / w.sum())
 
-    def sample(outcome_idx):  # 0 = first team wins, 1 draw, 2 second wins
-        oc = ("win", "draw", "loss")[outcome_idx]
+    def sample(outcome_idx, pair=None):  # 0 = first wins, 1 draw, 2 second
+        oc = ("win", "draw", "loss")[outcome_idx]   # pair ignored: global dist
         lines, w = dists[oc]
         return lines[rng.choice(len(lines), p=w)]
     return sample
+
+
+def dc_tables(dc, rng):
+    """Outcome table + PAIR-AWARE scoreline sampler from a fitted
+    Dixon-Coles model. Outcomes and scorelines both come from the same
+    tau-corrected score matrix per pairing, so tiebreaker goal differences
+    are team-specific and consistent with the sampled outcomes.
+
+    No symmetrization needed: at neutral venues DC is structurally
+    symmetric (M(a,b) == M(b,a).T), unlike the LR's home-label bias."""
+    probs, regions = {}, {}
+    for a in ALL_TEAMS:
+        for b in ALL_TEAMS:
+            if a == b:
+                continue
+            if b in HOSTS and a not in HOSTS:
+                M = dc.score_matrix(b, a, true_home=True).T
+            else:
+                M = dc.score_matrix(a, b,
+                                    true_home=(a in HOSTS and b not in HOSTS))
+            probs[(a, b)] = np.array([np.tril(M, -1).sum(), np.trace(M),
+                                      np.triu(M, 1).sum()])
+            per_oc = []
+            n = M.shape[0]
+            for mask in (np.tri(n, k=-1, dtype=bool),        # a wins: i > j
+                         np.eye(n, dtype=bool),               # draw
+                         np.tri(n, k=-1, dtype=bool).T):      # b wins: i < j
+                lines = [(i, j) for i in range(n) for j in range(n)
+                         if mask[i, j]]
+                w = np.array([M[i, j] for i, j in lines])
+                per_oc.append((lines, w / w.sum()))
+            regions[(a, b)] = per_oc
+
+    def sample(outcome_idx, pair):
+        lines, w = regions[pair][outcome_idx]
+        return lines[rng.choice(len(lines), p=w)]
+    return probs, sample
 
 
 # --- One tournament ---------------------------------------------------------
@@ -152,7 +191,7 @@ def simulate_once(probs, fixtures, sample_score, rng):
         for a, b in fixtures[g]:
             p = probs[(a, b)]
             oc = rng.choice(3, p=p / p.sum())
-            ga, gb = sample_score(oc)
+            ga, gb = sample_score(oc, (a, b))
             results[(a, b)] = (ga, gb)
             stats[a]["pts"] += 3 if ga > gb else (1 if ga == gb else 0)
             stats[b]["pts"] += 3 if gb > ga else (1 if ga == gb else 0)
@@ -199,12 +238,20 @@ def simulate_once(probs, fixtures, sample_score, rng):
     return reached
 
 
-def run(n_sims=10_000, seed=2026):
+def run(n_sims=10_000, seed=2026, use_dc=False):
     rng = np.random.default_rng(seed)
-    model = joblib.load(MODELS_DIR / "outcome_model.joblib")
-    state = team_state()
-    probs = build_prob_tables(model, state)
-    sample_score = scoreline_sampler(rng)
+    if use_dc:
+        from src.models.dixon_coles import TRAIN_START, DixonColes
+        matches = pd.read_csv(DATA_PROCESSED / "matches.csv",
+                              parse_dates=["date"])
+        dc = DixonColes(half_life_years=10.0).fit(
+            matches[matches["date"] >= TRAIN_START])
+        print(f"DC fit: gamma={dc.gamma:.3f} rho={dc.rho:.4f}")
+        probs, sample_score = dc_tables(dc, rng)
+    else:
+        model = joblib.load(MODELS_DIR / "outcome_model.joblib")
+        probs = build_prob_tables(model, team_state())
+        sample_score = scoreline_sampler(rng)
 
     fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv")
     fixtures = {g: [] for g in GROUPS}
@@ -223,7 +270,8 @@ def run(n_sims=10_000, seed=2026):
 
     out = (pd.DataFrame(counts).T / n_sims).sort_values("champion",
                                                         ascending=False)
-    dest = PROJECT_ROOT / "reports" / "sim_2026.csv"
+    dest = PROJECT_ROOT / "reports" / ("sim_2026_dc.csv" if use_dc
+                                       else "sim_2026.csv")
     dest.parent.mkdir(exist_ok=True)
     out.to_csv(dest)
     print(f"\nSaved {dest.relative_to(PROJECT_ROOT)} ({n_sims:,} sims)")
@@ -234,4 +282,5 @@ def run(n_sims=10_000, seed=2026):
 
 
 if __name__ == "__main__":
-    run(int(sys.argv[1]) if len(sys.argv) > 1 else 10_000)
+    nums = [a for a in sys.argv[1:] if a.isdigit()]
+    run(int(nums[0]) if nums else 10_000, use_dc="--dc" in sys.argv)
