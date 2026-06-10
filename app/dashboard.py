@@ -21,7 +21,10 @@ from src.config import DATA_PROCESSED, MODELS_DIR  # noqa: E402
 from src.features.elo import match_tier  # noqa: E402
 from src.models.train import TIERS, proba_in_class_order  # noqa: E402
 from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
-from src.simulation.simulate import build_prob_tables, team_state  # noqa: E402
+from src.simulation.fixture_preds import (LOCK_PATH,  # noqa: E402
+                                          fixture_predictions)
+from src.simulation.fixture_preds import scoreline_dists as _scoreline_dists  # noqa: E402
+from src.simulation.simulate import team_state  # noqa: E402
 
 REPORTS = ROOT / "reports"
 ROUND_LABELS = {"group_top2": "Top 2 in group", "third_qualified": "Best-8 third",
@@ -54,73 +57,142 @@ def load_sim(sigma: int) -> pd.DataFrame | None:
 
 @st.cache_data
 def scoreline_dists():
-    m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
-    m = m[m["date"] >= "2010-01-01"]
-    gd = m["home_score"] - m["away_score"]
-    oc = np.select([gd > 0, gd < 0], ["win", "loss"], "draw")
-    dists = {}
-    for o in ("win", "draw", "loss"):
-        c = Counter(zip(m.loc[oc == o, "home_score"].astype(int),
-                        m.loc[oc == o, "away_score"].astype(int)))
-        tot = sum(c.values())
-        dists[o] = {s: n / tot for s, n in c.items()}
-    return dists
+    return _scoreline_dists()
 
 
 @st.cache_data
-def fixture_predictions() -> pd.DataFrame:
-    """All 72 group fixtures with model probabilities and the exact
-    (analytic) top scorelines: outcome probs x scoreline-given-outcome.
-    Same distributions the Monte Carlo samples, without sampling noise."""
-    probs = build_prob_tables(load_model(), load_state())
-    dists = scoreline_dists()
-    members = {t: g for g, ts in GROUPS.items() for t in ts}
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv",
-                     parse_dates=["date"])
-    rows = []
-    for r in fx.itertuples():
-        p = probs[(r.home_team, r.away_team)]
-        mix = Counter()
-        for o, pi in zip(("win", "draw", "loss"), p):
-            for s, q in dists[o].items():
-                mix[s] += pi * q
-        top = mix.most_common(2)
-        rows.append({
-            "date": r.date.date(), "group": members[r.home_team],
-            "match": f"{r.home_team} vs {r.away_team}",
-            "venue": f"{r.city} ({r.country})",
-            "home %": p[0], "draw %": p[1], "away %": p[2],
-            "likeliest score": f"{top[0][0][0]}-{top[0][0][1]}"
-                               f"  ({top[0][1]:.0%})",
-            "second": f"{top[1][0][0]}-{top[1][0][1]}  ({top[1][1]:.0%})",
-        })
-    return pd.DataFrame(rows).sort_values(["date", "group"])
+def locked_predictions() -> tuple[pd.DataFrame, bool]:
+    """The frozen pre-tournament forecast (reports/predictions_2026_locked.csv).
+    Falls back to live computation only if the lock file is missing."""
+    if LOCK_PATH.exists():
+        df = pd.read_csv(LOCK_PATH, parse_dates=["date"])
+        df["date"] = df["date"].dt.date
+        return df, True
+    return fixture_predictions(load_model(), load_state()), False
+
+
+@st.cache_data
+def wc2026_results() -> pd.DataFrame:
+    """Played 2026 WC matches from the (refreshable) cleaned data."""
+    m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
+    m = m[(m["tournament"] == "FIFA World Cup") & (m["date"] >= "2026-06-11")]
+    m = m[["home_team", "away_team", "home_score", "away_score"]].copy()
+    gd = m["home_score"] - m["away_score"]
+    m["actual"] = np.select([gd > 0, gd < 0], ["home", "away"], "draw")
+    return m
 
 
 def view_schedule():
-    st.header("Group-stage schedule & predictions")
-    st.caption("All 72 fixtures, June 11–27. Probabilities are the exact "
-               "model outputs the simulation samples from; scorelines are "
-               "outcome-conditional modern-era distributions (not "
-               "team-specific — see Model card). 'Home' = first-listed team; "
-               "true home advantage applies only to USA/Mexico/Canada.")
-    fx = fixture_predictions()
-    c1, c2 = st.columns(2)
+    st.header("Group-stage schedule: predictions vs reality")
+    locked, is_locked = locked_predictions()
+    if is_locked:
+        st.caption("Predictions **frozen 2026-06-10**, the day before kickoff "
+                   "— results update; the forecast cannot. Scorelines are "
+                   "outcome-conditional modern-era distributions (not "
+                   "team-specific); true home advantage applies only to "
+                   "USA/Mexico/Canada matches.")
+    else:
+        st.warning("Lock file missing — showing live-computed predictions. "
+                   "Run `python -m src.simulation.fixture_preds` to freeze.")
+
+    if st.button("↻ Refresh results from data source"):
+        with st.spinner("Downloading latest results from Kaggle…"):
+            from src.data.clean import clean
+            from src.data.download import download
+            download()
+            clean()
+        st.cache_data.clear()
+        st.rerun()
+
+    res = wc2026_results()
+    fx = locked.merge(res, on=["home_team", "away_team"], how="left")
+    played = fx["actual"].notna()
+
+    # --- Running scoreboard: forecast vs reality so far ---------------------
+    if played.any():
+        pf = fx[played]
+        p_actual = np.select(
+            [pf["actual"] == "home", pf["actual"] == "draw"],
+            [pf["p_home"], pf["p_draw"]], pf["p_away"])
+        hits1 = (pf["top1_score"] ==
+                 pf["home_score"].astype(int).astype(str) + "-"
+                 + pf["away_score"].astype(int).astype(str))
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric("Matches played", f"{played.sum()}/72")
+        c2.metric("Outcome picks correct",
+                  f"{(pf['pick'] == pf['actual']).mean():.0%}",
+                  help="Argmax pick — remember the model is honest about "
+                       "uncertainty; ~60% was the validation rate.")
+        c3.metric("Log-loss (vs 1.05 = know-nothing)",
+                  f"{-np.log(np.clip(p_actual, 1e-15, 1)).mean():.3f}",
+                  help="Mean -log P(realized outcome). Validation: 0.871. "
+                       "Below 1.05 means beating the base-rate forecaster.")
+        c4.metric("Exact-score hits",
+                  f"{int(hits1.sum())} (exp. {pf['top1_p'].sum():.1f})",
+                  help="Likeliest-scoreline hits vs the number the forecast "
+                       "itself expected by now. Close = calibrated.")
+    else:
+        st.info("No results yet — kickoff June 11. The scoreboard appears "
+                "here as matches finish.")
+
+    # --- Fixture table -------------------------------------------------------
+    c1, c2, c3 = st.columns(3)
     g = c1.selectbox("Group", ["All"] + list(GROUPS))
     days = ["All"] + sorted({str(d) for d in fx["date"]})
     d = c2.selectbox("Date", days)
+    only = c3.selectbox("Show", ["All", "Played", "Upcoming"])
     show = fx
     if g != "All":
         show = show[show["group"] == g]
     if d != "All":
         show = show[show["date"].astype(str) == d]
-    st.dataframe(
-        show.reset_index(drop=True)  # Styler needs a UNIQUE index
-            .style.format({"home %": "{:.0%}", "draw %": "{:.0%}",
-                           "away %": "{:.0%}"})
-            .background_gradient(subset=["home %", "draw %", "away %"],
-                                 cmap="Blues", vmin=0, vmax=0.85),
-        height=600, use_container_width=True, hide_index=True)
+    if only == "Played":
+        show = show[show["actual"].notna()]
+    elif only == "Upcoming":
+        show = show[show["actual"].isna()]
+
+    disp = pd.DataFrame({
+        "date": show["date"], "grp": show["group"],
+        "match": show["home_team"] + " vs " + show["away_team"],
+        "home %": show["p_home"], "draw %": show["p_draw"],
+        "away %": show["p_away"],
+        "likeliest": show["top1_score"] + show["top1_p"].map("  ({:.0%})".format),
+        "result": np.where(
+            show["actual"].notna(),
+            show["home_score"].fillna(0).astype(int).astype(str) + "-"
+            + show["away_score"].fillna(0).astype(int).astype(str), "—"),
+        "pick": np.select(
+            [show["actual"].isna(), show["pick"] == show["actual"]],
+            ["·", "✓"], "✗"),
+    })
+    # st.dataframe ignores Styler na_rep (renders NaN as "None"), so
+    # P(actual) is a pre-formatted string column with a hand-painted
+    # gradient computed from the numeric values.
+    p_act = pd.Series(np.select(
+        [show["actual"] == "home", show["actual"] == "draw",
+         show["actual"] == "away"],
+        [show["p_home"], show["p_draw"], show["p_away"]], np.nan),
+        index=show.index, dtype=float)
+    disp["P(actual)"] = p_act.map(
+        lambda v: "·" if pd.isna(v) else f"{v:.0%}")
+    cmap = plt.get_cmap("RdYlGn")
+    pa_styles = [
+        "" if pd.isna(v) else
+        f"background-color: {plt.matplotlib.colors.to_hex(cmap((min(max(v, .1), .75) - .1) / .65))}"
+        for v in p_act
+    ]
+    styled = (disp.reset_index(drop=True)  # Styler needs a UNIQUE index
+                  .style.format({"home %": "{:.0%}", "draw %": "{:.0%}",
+                                 "away %": "{:.0%}"})
+                  .background_gradient(subset=["home %", "draw %", "away %"],
+                                       cmap="Blues", vmin=0, vmax=0.85)
+                  .apply(lambda s: pa_styles, subset=["P(actual)"]))
+    st.dataframe(styled, height=600, use_container_width=True,
+                 hide_index=True)
+    st.caption("**P(actual)** = probability the frozen forecast gave the "
+               "outcome that actually happened — green is good. A calibrated "
+               "model should average ~45–50% here, not 100%: upsets are "
+               "supposed to happen at their stated rates.")
 
 
 def predict_pair(team_a, team_b, venue, tier):
