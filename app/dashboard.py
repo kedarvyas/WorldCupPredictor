@@ -25,8 +25,9 @@ from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
 from src.simulation.fixture_preds import (LOCK_PATH,  # noqa: E402
                                           fixture_predictions)
 from src.simulation.fixture_preds import scoreline_dists as _scoreline_dists  # noqa: E402
-from src.simulation.group_sim import (played_ko_results,  # noqa: E402
-                                      played_results, simulate_live)
+from src.simulation.group_sim import (bracket_tree_order,  # noqa: E402
+                                      played_ko_results, played_results,
+                                      simulate_live)
 from src.simulation.simulate import (build_prob_tables, dc_tables,  # noqa: E402
                                      scoreline_sampler, team_state)
 
@@ -265,15 +266,17 @@ def view_live_sim():
             else:
                 probs = build_prob_tables(load_model(), load_state())
                 sampler = scoreline_sampler(np.random.default_rng(rng_seed))
-            out = simulate_live(probs, sampler, n_sims=n_sims, seed=rng_seed,
-                                group_results=results, ko_results=ko_res)
-        st.session_state["live_sim"] = (out, model_choice, n_sims,
+            out, nodes = simulate_live(probs, sampler, n_sims=n_sims,
+                                       seed=rng_seed, group_results=results,
+                                       ko_results=ko_res, return_nodes=True)
+        st.session_state["live_sim"] = (out, nodes, model_choice, n_sims,
                                         len(results), len(ko_res))
 
     if "live_sim" not in st.session_state:
         st.info("Pick a model and hit **Run simulation**.")
         return
-    out, used_model, used_n, used_gr, used_ko = st.session_state["live_sim"]
+    (out, nodes, used_model, used_n,
+     used_gr, used_ko) = st.session_state["live_sim"]
     st.markdown(f"*{used_n:,} simulations · {used_model} · {used_gr} group "
                 f"+ {used_ko} knockout result(s) locked in*")
 
@@ -298,18 +301,68 @@ def view_live_sim():
                         height=178)
 
     with tab_ko:
-        ko_cols = ["R32", "R16", "QF", "SF", "final", "champion"]
-        alive = out[out["champion"] > 0].sort_values("champion",
-                                                     ascending=False)
-        st.dataframe(
-            alive[["group"] + ko_cols]
-            .style.format({c: "{:.1%}" for c in ko_cols})
-            .background_gradient(subset=ko_cols, cmap="Blues", axis=None),
-            height=600)
-        eliminated = out[out["champion"] == 0]
-        if len(eliminated) and used_gr + used_ko > 0:
-            st.caption("Zero-title-odds teams hidden: "
-                       + ", ".join(sorted(eliminated.index)))
+        st.markdown(_bracket_html(nodes), unsafe_allow_html=True)
+        st.caption("Each slot lists the two most likely occupants and how "
+                   "often they appear there across simulations. Slots at "
+                   "100% are locked in by real results; everything else is "
+                   "still probability.")
+        with st.expander("Full survival table"):
+            ko_cols = ["R32", "R16", "QF", "SF", "final", "champion"]
+            alive = out[out["champion"] > 0].sort_values("champion",
+                                                         ascending=False)
+            st.dataframe(
+                alive[["group"] + ko_cols]
+                .style.format({c: "{:.1%}" for c in ko_cols})
+                .background_gradient(subset=ko_cols, cmap="Blues",
+                                     axis=None),
+                height=600)
+
+
+def _bracket_html(nodes) -> str:
+    order = bracket_tree_order()
+    titles = {"R32": "Round of 32", "R16": "Round of 16",
+              "QF": "Quarterfinals", "SF": "Semifinals", "final": "Final"}
+
+    def box(match_no):
+        top = sorted(nodes.get(match_no, {}).items(),
+                     key=lambda kv: -kv[1])[:2]
+        lines = "".join(
+            f"<div class='t'><em>{t}</em><span>{p:.0%}</span></div>"
+            for t, p in top)
+        return f"<div class='bx'>{lines or '<div class=t>—</div>'}</div>"
+
+    cols = ""
+    for rnd, ms in order.items():
+        boxes = "".join(box(m) for m in ms)
+        cols += (f"<div class='rcol'><div class='hdr'>{titles[rnd]}</div>"
+                 f"<div class='stack'>{boxes}</div></div>")
+    champ = sorted(nodes.get("champion", {}).items(),
+                   key=lambda kv: -kv[1])[:3]
+    champ_lines = "".join(
+        f"<div class='t'><em>{t}</em><span>{p:.0%}</span></div>"
+        for t, p in champ)
+    cols += (f"<div class='rcol'><div class='hdr'>🏆 Champion</div>"
+             f"<div class='stack'><div class='bx champ'>{champ_lines}"
+             f"</div></div></div>")
+
+    return f"""
+<style>
+.bracket {{ display:flex; gap:10px; height:1000px; }}
+.bracket .rcol {{ flex:1; display:flex; flex-direction:column; min-width:0; }}
+.bracket .hdr {{ text-align:center; font-size:12px; font-weight:600;
+                 color:#5a6172; padding-bottom:4px; }}
+.bracket .stack {{ flex:1; display:flex; flex-direction:column;
+                   justify-content:space-around; }}
+.bracket .bx {{ border:1px solid #d6d9e0; border-radius:6px;
+                padding:3px 7px; background:#f7f8fa; font-size:11px;
+                line-height:1.55; }}
+.bracket .bx.champ {{ border-color:#c9a227; background:#fdf8e7; }}
+.bracket .t {{ display:flex; justify-content:space-between; gap:6px; }}
+.bracket .t em {{ font-style:normal; overflow:hidden;
+                  text-overflow:ellipsis; white-space:nowrap; }}
+.bracket .t span {{ color:#5a6172; font-variant-numeric:tabular-nums; }}
+</style>
+<div class="bracket">{cols}</div>"""
 
 
 def predict_pair(team_a, team_b, venue, tier):

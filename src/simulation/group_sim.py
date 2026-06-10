@@ -77,13 +77,15 @@ def played_ko_results() -> dict[frozenset, str]:
 
 
 def simulate_live(probs, sample_score, n_sims=5000, seed=2026,
-                  group_results=None, ko_results=None) -> pd.DataFrame:
+                  group_results=None, ko_results=None, return_nodes=False):
     """Full-tournament Monte Carlo conditioned on everything played so far.
 
     probs/sample_score: same contracts as simulate.simulate_once (outcome
     table keyed by ordered pair; sampler(outcome_idx, pair)).
     group_results: {(home, away): (gh, ga)} held fixed.
     ko_results: {frozenset({a, b}): winner} held fixed.
+    return_nodes: also return {match_no: {team: appearance_prob}} for
+    every bracket node — feeds the dashboard's bracket view.
     """
     rng = np.random.default_rng(seed)
     fixtures = group_fixtures()
@@ -94,6 +96,7 @@ def simulate_live(probs, sample_score, n_sims=5000, seed=2026,
     best_third = defaultdict(int)
     pts_sum = defaultdict(float)
     reach = {t: defaultdict(int) for t in ALL_TEAMS}
+    node_counts = defaultdict(lambda: defaultdict(int))
 
     def ko(a, b):
         real = ko_results.get(frozenset((a, b)))
@@ -154,6 +157,11 @@ def simulate_live(probs, sample_score, n_sims=5000, seed=2026,
                 for t in entrants[m_no]:
                     reach[t][rnd_name] += 1
         reach[winners[104]]["champion"] += 1
+        if return_nodes:
+            for m_no, (a, b) in entrants.items():
+                node_counts[m_no][a] += 1
+                node_counts[m_no][b] += 1
+            node_counts["champion"][winners[104]] += 1
 
     members = {t: g for g, ts in GROUPS.items() for t in ts}
     rows = {}
@@ -166,4 +174,30 @@ def simulate_live(probs, sample_score, n_sims=5000, seed=2026,
                    **{r: reach[t][r] / n_sims
                       for r in ("R32", "R16", "QF", "SF", "final",
                                 "champion")}}
-    return pd.DataFrame.from_dict(rows, orient="index")
+    df = pd.DataFrame.from_dict(rows, orient="index")
+    if return_nodes:
+        nodes = {m: {t: c / n_sims for t, c in teams.items()}
+                 for m, teams in node_counts.items()}
+        return df, nodes
+    return df
+
+
+def bracket_tree_order() -> dict[str, list[int]]:
+    """Match numbers per round, ordered by a depth-first walk from the
+    final so vertically adjacent nodes share a parent (bracket layout)."""
+    feeders = {**R16, **QF, **SF, **FINAL}
+    order = {"R32": [], "R16": [], "QF": [], "SF": [], "final": []}
+    rnd_of = {m: "R16" for m in R16} | {m: "QF" for m in QF} \
+        | {m: "SF" for m in SF} | {104: "final"}
+
+    def visit(m):
+        if m in feeders:
+            a, b = feeders[m]
+            visit(a)
+            visit(b)
+            order[rnd_of[m]].append(m)
+        else:
+            order["R32"].append(m)
+
+    visit(104)
+    return order
