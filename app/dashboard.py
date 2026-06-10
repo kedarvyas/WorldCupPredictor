@@ -681,13 +681,25 @@ def view_betting():
                                 label_visibility="collapsed")
                         entered.append((mkt, label, sel, p, odds))
                         e = edge(p, odds)
-                        stake = round(bankroll * kelly_mult
-                                      * kelly_fraction(p, odds), 2)
-                        st.caption(f"edge {e:+.1%} · stake {stake:.0f}")
-                        if e > 0 and st.button("Log bet",
-                                               key=f"log_{mkt}_{sel}"):
+                        if e > 0:
+                            stake = round(bankroll * kelly_mult
+                                          * kelly_fraction(p, odds), 2)
+                            st.caption(f"edge {e:+.1%} · stake {stake:.0f}")
+                        else:
+                            # Kelly sizes negative edges to zero; hunch bets
+                            # get a flat 1% tracking stake instead.
+                            stake = round(bankroll * 0.01, 2)
+                            st.caption(f"edge {e:+.1%} · no value "
+                                       f"(hunch stake {stake:.0f})")
+                        if st.button(f"Log: {label}", key=f"log_{mkt}_{sel}"):
                             append_bet(home, away, mkt, sel, odds, p, stake)
-                            st.success(f"Logged: {label} @ {odds:.2f}")
+                            msg = f"Logged: {label} @ {odds:.2f}"
+                            if e > 0:
+                                st.success(msg)
+                            else:
+                                st.warning(msg + f" — model sees {e:+.1%} "
+                                           "edge; logged as a 1% hunch "
+                                           "stake against its advice")
 
         # --- Best Bets: verdicts on the odds entered above -------------------
         st.subheader("Best bets — this fixture")
