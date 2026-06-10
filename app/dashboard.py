@@ -409,9 +409,14 @@ against reality side by side.
   team-specific (the Dixon-Coles challenger fixes this in the Schedule
   and Tournament-odds views; the Match explorer is still champion-only).
 - The two models **disagree substantially on title odds** (champion:
-  Spain 35%, Brazil ~5%; challenger: Brazil 21%, Spain 12%). The champion
-  has the better validated outcome log-loss and remains primary; the gap
-  itself is honest model risk the group stage will help adjudicate.
+  Spain 35%, Brazil ~5%; challenger: Brazil 21%, Spain 12%). Diagnosis:
+  DC's 10y memory still credits Brazil's dominant 2010s. On the full
+  validation set the champion wins (0.871 vs 0.891) — but on the 557
+  **elite-vs-elite** validation matches (both teams WC2026 participants),
+  DC hl=10y is the better model (log-loss 1.016 vs champion 1.038), and
+  longer memory beats shorter there too. Each model is primary where it
+  validates best; bookmakers' lower Brazil price likely reflects squad
+  information neither model sees. The group stage adjudicates.
 - FIFA ranking feature excluded (source data ends 2024-06).
 - Penalty shootouts modeled as strength-weighted coin flips.
 - Single-tournament backtest: weak power to detect compounding bias.
