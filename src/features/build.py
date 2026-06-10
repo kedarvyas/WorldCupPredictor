@@ -9,7 +9,7 @@ Usage:
 
 import pandas as pd
 
-from src.config import DATA_PROCESSED
+from src.config import DATA_PROCESSED, TOURNAMENT_START
 from src.features.elo import compute_elo
 from src.features.form import compute_form
 
@@ -17,6 +17,9 @@ from src.features.form import compute_form
 def build() -> pd.DataFrame:
     matches = pd.read_csv(DATA_PROCESSED / "matches.csv",
                           index_col="match_id", parse_dates=["date"])
+    # Frozen-parameters rule: Elo/form/training features must never absorb
+    # tournament results, even if the pipeline is rerun mid-tournament.
+    matches = matches[matches["date"] < TOURNAMENT_START]
 
     with_elo, final_ratings = compute_elo(matches)
     features = compute_form(with_elo)

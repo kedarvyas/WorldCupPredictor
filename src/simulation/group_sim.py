@@ -20,7 +20,7 @@ from collections import defaultdict
 import numpy as np
 import pandas as pd
 
-from src.config import DATA_PROCESSED, DATA_RAW
+from src.config import DATA_PROCESSED, DATA_RAW, FIXTURES_FROZEN
 from src.simulation.bracket import (FINAL, GROUPS, QF, R16, R32, SF,
                                     allocate_thirds)
 from src.simulation.simulate import rank_teams
@@ -30,7 +30,7 @@ KO_START = "2026-06-28"  # day after the last group match
 
 
 def group_fixtures() -> dict[str, list[tuple[str, str]]]:
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv")
+    fx = pd.read_csv(FIXTURES_FROZEN)  # full 72; wc2026_fixtures.csv shrinks
     fixtures = {g: [] for g in GROUPS}
     for r in fx.itertuples():
         g = next(k for k, t in GROUPS.items() if r.home_team in t)
@@ -40,11 +40,15 @@ def group_fixtures() -> dict[str, list[tuple[str, str]]]:
 
 
 def played_results() -> dict[tuple[str, str], tuple[int, int]]:
-    """Actual WC2026 group results so far, keyed like the fixtures."""
+    """Actual WC2026 GROUP results so far, keyed like the fixtures.
+    Filtered to the 72 known group pairings — knockout matches must not
+    inflate the count or pollute the group-results dict."""
+    pairs = {p for fx in group_fixtures().values() for p in fx}
     m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
     m = m[(m["tournament"] == "FIFA World Cup") & (m["date"] >= "2026-06-11")]
     return {(r.home_team, r.away_team): (int(r.home_score), int(r.away_score))
-            for r in m.itertuples()}
+            for r in m.itertuples()
+            if (r.home_team, r.away_team) in pairs}
 
 
 def played_ko_results() -> dict[frozenset, str]:

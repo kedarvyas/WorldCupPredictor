@@ -29,7 +29,8 @@ import numpy as np
 import pandas as pd
 from scipy.optimize import minimize
 
-from src.config import DATA_PROCESSED, PROJECT_ROOT, VALIDATION_START
+from src.config import (DATA_PROCESSED, FIXTURES_FROZEN, PROJECT_ROOT,
+                        TOURNAMENT_START, VALIDATION_START)
 
 MAX_GOALS = 12          # score-matrix truncation
 RHO_BOUND = 0.2         # keeps all tau cells positive for realistic rates
@@ -213,13 +214,13 @@ def lock():
         sys.exit(f"{DC_LOCK_PATH.name} already exists — locked.")
 
     matches = load_matches()
-    train = matches[matches["date"] >= TRAIN_START]
+    train = matches[(matches["date"] >= TRAIN_START)
+                    & (matches["date"] < TOURNAMENT_START)]
     dc = DixonColes(half_life_years=10.0).fit(train)  # best by validation
     print(f"Full fit: gamma={dc.gamma:.3f} rho={dc.rho:.4f}")
 
     members = {t: g for g, ts in GROUPS.items() for t in ts}
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv",
-                     parse_dates=["date"])
+    fx = pd.read_csv(FIXTURES_FROZEN, parse_dates=["date"])
     rows = []
     for r in fx.itertuples():
         M = dc.score_matrix(r.home_team, r.away_team, true_home=not r.neutral)

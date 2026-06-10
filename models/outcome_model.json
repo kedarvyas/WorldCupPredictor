@@ -1,5 +1,5 @@
 {
-  "config": "LR window 2010+",
+  "config": "LR window 2010+ (deployed refit through tournament eve)",
   "features": [
     "elo_diff",
     "neutral",
@@ -16,5 +16,14 @@
     "draw",
     "away_win"
   ],
-  "validation_log_loss": 0.8707
+  "train_window": [
+    "2010-01-01",
+    "2026-06-08 (inclusive)"
+  ],
+  "n_train": 15742,
+  "selection_validation_log_loss": 0.8707,
+  "data_snapshot": {
+    "dataset": "martj42/international-football-results-from-1872-to-2017",
+    "downloaded_at_utc": "2026-06-10T18:45:48.979140+00:00"
+  }
 }

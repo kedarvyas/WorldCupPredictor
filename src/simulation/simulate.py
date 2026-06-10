@@ -30,7 +30,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.config import DATA_PROCESSED, MODELS_DIR, PROJECT_ROOT
+from src.config import (DATA_PROCESSED, FIXTURES_FROZEN, MODELS_DIR,
+                        PROJECT_ROOT, TOURNAMENT_START)
 from src.models.train import TIERS, proba_in_class_order
 from src.simulation.bracket import (FINAL, GROUPS, HOSTS, QF, R16, R32, SF,
                                     allocate_thirds)
@@ -94,13 +95,13 @@ def build_prob_tables(model, state):
     return table
 
 
-def scoreline_sampler(rng, before=None):
+def scoreline_sampler(rng, before=TOURNAMENT_START):
     """Empirical scoreline distributions conditional on outcome, 2010+.
-    `before` caps the window for as-of backtests (no future scorelines)."""
+    `before` caps the window: TOURNAMENT_START by default (frozen-parameters
+    rule — tournament results must never feed the distributions), or an
+    earlier cutoff for as-of backtests."""
     m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
-    m = m[m["date"] >= "2010-01-01"]
-    if before is not None:
-        m = m[m["date"] < before]
+    m = m[(m["date"] >= "2010-01-01") & (m["date"] < before)]
     gd = m["home_score"] - m["away_score"]
     outcomes = np.select([gd > 0, gd < 0], ["win", "loss"], "draw")
     dists = {}
@@ -245,7 +246,8 @@ def run(n_sims=10_000, seed=2026, use_dc=False):
         matches = pd.read_csv(DATA_PROCESSED / "matches.csv",
                               parse_dates=["date"])
         dc = DixonColes(half_life_years=10.0).fit(
-            matches[matches["date"] >= TRAIN_START])
+            matches[(matches["date"] >= TRAIN_START)
+                    & (matches["date"] < TOURNAMENT_START)])
         print(f"DC fit: gamma={dc.gamma:.3f} rho={dc.rho:.4f}")
         probs, sample_score = dc_tables(dc, rng)
     else:
@@ -253,7 +255,7 @@ def run(n_sims=10_000, seed=2026, use_dc=False):
         probs = build_prob_tables(model, team_state())
         sample_score = scoreline_sampler(rng)
 
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv")
+    fx = pd.read_csv(FIXTURES_FROZEN)
     fixtures = {g: [] for g in GROUPS}
     for r in fx.itertuples():
         g = next(k for k, t in GROUPS.items() if r.home_team in t)

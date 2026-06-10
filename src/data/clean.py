@@ -17,7 +17,7 @@ Usage:
 
 import pandas as pd
 
-from src.config import DATA_PROCESSED, DATA_RAW
+from src.config import DATA_PROCESSED, DATA_RAW, FIXTURES_FROZEN
 
 # Successor merges: applied to team columns before any Elo computation.
 # (West Germany -> Germany and USSR -> Russia are already merged upstream.)
@@ -59,6 +59,15 @@ def clean() -> pd.DataFrame:
     DATA_PROCESSED.mkdir(parents=True, exist_ok=True)
     df.to_csv(DATA_PROCESSED / "matches.csv")
     fixtures.to_csv(DATA_PROCESSED / "wc2026_fixtures.csv", index=False)
+
+    # Freeze the full 72-fixture snapshot exactly once (pre-tournament).
+    # wc2026_fixtures.csv shrinks as results arrive; simulators need the
+    # complete stable schedule.
+    if not FIXTURES_FROZEN.exists():
+        assert len(fixtures) == 72, \
+            f"cannot freeze fixtures: expected 72 unplayed, got {len(fixtures)}"
+        fixtures.to_csv(FIXTURES_FROZEN, index=False)
+        print(f"Froze fixtures snapshot -> {FIXTURES_FROZEN.name}")
 
     print(f"matches.csv:         {len(df):,} played matches "
           f"({df['date'].min().date()} to {df['date'].max().date()})")

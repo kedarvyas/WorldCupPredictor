@@ -15,6 +15,7 @@ Usage:
 """
 
 import json
+import sys
 
 import joblib
 import numpy as np
@@ -122,5 +123,44 @@ def run():
     return best, X_val, y_val
 
 
+def deploy():
+    """Refit the selected config on ALL pre-tournament data and save.
+
+    run() selects hyperparameters by temporal validation, so its artifact
+    is trained only through VALIDATION_START (2022). The standard final
+    step before deployment is refitting the chosen config on everything up
+    to the freeze line — otherwise the coefficients never see 2022-2026.
+    Validation metrics in the metadata refer to the SELECTION run (the
+    deployed refit cannot be validated on data it trained on).
+    """
+    from src.config import DATA_RAW, TOURNAMENT_START
+
+    df = load_features()
+    tr = df[(df["date"] >= "2010-01-01") & (df["date"] < TOURNAMENT_START)]
+    X, y = make_xy(tr)
+    model = fit_model(X, y)
+
+    MODELS_DIR.mkdir(exist_ok=True)
+    joblib.dump(model, MODELS_DIR / "outcome_model.joblib")
+    snapshot = json.loads((DATA_RAW / "snapshot.json").read_text())
+    meta = {
+        "config": "LR window 2010+ (deployed refit through tournament eve)",
+        "features": list(X.columns),
+        "classes_order": CLASSES,
+        "train_window": ["2010-01-01",
+                         str(tr["date"].max().date()) + " (inclusive)"],
+        "n_train": len(X),
+        "selection_validation_log_loss": 0.8707,
+        "data_snapshot": snapshot,
+    }
+    (MODELS_DIR / "outcome_model.json").write_text(json.dumps(meta, indent=2))
+    print(f"Deployed refit: {len(X):,} matches "
+          f"(2010-01-01 -> {tr['date'].max().date()}) "
+          f"-> models/outcome_model.joblib")
+
+
 if __name__ == "__main__":
-    run()
+    if "--deploy" in sys.argv:
+        deploy()
+    else:
+        run()

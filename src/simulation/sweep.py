@@ -87,7 +87,8 @@ def run(n_sims=10_000):
     for pair in [("Spain", "Brazil"), ("Mexico", "Qatar"), ("Japan", "Iran")]:
         assert np.allclose(table[pair], static[pair], atol=1e-9), pair
 
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv")
+    from src.config import FIXTURES_FROZEN
+    fx = pd.read_csv(FIXTURES_FROZEN)
     fixtures = {g: [] for g in GROUPS}
     members = {t: g for g, ts in GROUPS.items() for t in ts}
     for r in fx.itertuples():

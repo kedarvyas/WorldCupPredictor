@@ -16,7 +16,8 @@ import joblib
 import numpy as np
 import pandas as pd
 
-from src.config import DATA_PROCESSED, MODELS_DIR, PROJECT_ROOT
+from src.config import (DATA_PROCESSED, FIXTURES_FROZEN, MODELS_DIR,
+                        PROJECT_ROOT, TOURNAMENT_START)
 from src.simulation.bracket import GROUPS
 from src.simulation.simulate import build_prob_tables, team_state
 
@@ -24,12 +25,11 @@ LOCK_PATH = PROJECT_ROOT / "reports" / "predictions_2026_locked.csv"
 CLASS_LABELS = ["home", "draw", "away"]
 
 
-def scoreline_dists(before=None) -> dict:
-    """P(scoreline | outcome) from modern-era matches."""
+def scoreline_dists(before=TOURNAMENT_START) -> dict:
+    """P(scoreline | outcome) from modern-era matches, capped at the
+    tournament freeze line (frozen-parameters rule)."""
     m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
-    m = m[m["date"] >= "2010-01-01"]
-    if before is not None:
-        m = m[m["date"] < before]
+    m = m[(m["date"] >= "2010-01-01") & (m["date"] < before)]
     gd = m["home_score"] - m["away_score"]
     oc = np.select([gd > 0, gd < 0], ["win", "loss"], "draw")
     dists = {}
@@ -48,8 +48,7 @@ def fixture_predictions(model, state) -> pd.DataFrame:
     probs = build_prob_tables(model, state)
     dists = scoreline_dists()
     members = {t: g for g, ts in GROUPS.items() for t in ts}
-    fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures.csv",
-                     parse_dates=["date"])
+    fx = pd.read_csv(FIXTURES_FROZEN, parse_dates=["date"])
     rows = []
     for r in fx.itertuples():
         p = probs[(r.home_team, r.away_team)]

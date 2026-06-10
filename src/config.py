@@ -27,6 +27,18 @@ VALIDATION_START = "2022-01-01"
 # rank-based comparisons are restricted to matches before this date.
 FIFA_RANKS_END = "2024-06-20"
 
+# --- Tournament freeze line --------------------------------------------------
+# NOTHING may train/fit/estimate on matches from this date onward: model
+# parameters are frozen at their pre-tournament fit, and only the locked
+# forecasts + live conditioning consume tournament results. Every fit and
+# distribution estimate must cap its data at this date.
+TOURNAMENT_START = "2026-06-11"
+
+# Frozen snapshot of the 72 group fixtures, written once pre-tournament.
+# wc2026_fixtures.csv shrinks as matches are played (clean.py keeps only
+# unplayed rows) — simulators must use this stable copy instead.
+FIXTURES_FROZEN = DATA_PROCESSED / "wc2026_fixtures_frozen.csv"
+
 # --- Modeling hyperparameters (tuned later; defaults to start) -------------
 # Training-window start year is a hyperparameter: compare 1990 / 2000 / 2010
 # by validation log-loss in Phase 4. Full history before this is used only

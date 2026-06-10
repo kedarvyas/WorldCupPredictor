@@ -224,9 +224,11 @@ def view_schedule():
 
 @st.cache_resource(show_spinner="Fitting Dixon-Coles (first run only)…")
 def fitted_dc():
+    from src.config import TOURNAMENT_START
     from src.models.dixon_coles import TRAIN_START, DixonColes
     m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
-    return DixonColes(half_life_years=10.0).fit(m[m["date"] >= TRAIN_START])
+    m = m[(m["date"] >= TRAIN_START) & (m["date"] < TOURNAMENT_START)]
+    return DixonColes(half_life_years=10.0).fit(m)  # frozen pre-tournament
 
 
 @st.cache_data
@@ -518,12 +520,17 @@ def view_match():
 def view_model_card():
     st.header("Model card")
     st.markdown(f"""
-**Model.** Multinomial logistic regression (scikit-learn), trained on
-international matches **2010 → 2022** ({4533:,}-match temporal validation on
-2022+). Features: pre-match Elo difference (computed from scratch, importance-
-weighted K, margin-of-victory, +60 home-advantage offset), venue neutrality,
-match importance tier, recent form (PPG and goal-diff over last 10), rest-day
+**Model.** Multinomial logistic regression (scikit-learn). Hyperparameters
+(training-window start = 2010) selected by temporal validation
+({4533:,} matches, 2022+); final model **refit on 2010 → 2026-06-08**
+(15,742 matches, everything before the tournament freeze line) — the
+standard deploy step, so coefficients also see the current cycle. Features:
+pre-match Elo difference (computed from scratch, importance-weighted K,
+margin-of-victory, +60 home-advantage offset), venue neutrality, match
+importance tier, recent form (PPG and goal-diff over last 10), rest-day
 difference. Every feature uses **only pre-match information** (unit-tested).
+All parameters are frozen at the pre-tournament fit — enforced by date caps
+in code, not just policy.
 
 **Validation (temporal — train on past, validate on future):**
 
