@@ -595,8 +595,9 @@ def view_betting():
                "prices (see Market vs models: France) are exactly what we "
                "must beat. Expectation set by the model card, not hype.")
 
-    from src.models.betting import (append_bet, edge, kelly_fraction,
-                                    load_ledger, settle)
+    from src.models.betting import (american_to_decimal, append_bet,
+                                    decimal_to_american, edge,
+                                    kelly_fraction, load_ledger, settle)
     from src.models.recalibrate import apply as recal_apply
     from src.models.recalibrate import load_params, over25_prob
 
@@ -630,6 +631,15 @@ def view_betting():
                                   help="Full Kelly assumes the model "
                                        "probability is exactly right. "
                                        "It isn't. Bet smaller.")
+        fmt = c0.radio("Odds format", ["Decimal", "American"],
+                       help="Decimal 1.25 = American −400; "
+                            "decimal 7.03 = American +603. Internally "
+                            "everything is decimal; this only changes "
+                            "what you type and see.")
+        c0.caption("**The % is OUR model's probability; the prefilled "
+                   "odds are the model's fair (break-even) price.** "
+                   "Overwrite them with your book's odds — edge and Best "
+                   "Bets compare model vs book.")
 
         markets = {
             "1X2": {f"{home} (home)": ("home", row["p_home"]),
@@ -642,6 +652,7 @@ def view_betting():
         engines = {"1X2": "locked champion forecast",
                    "O/U 2.5": "DC matrix + recalibration",
                    "Correct score": "DC matrix — display-grade only"}
+        entered = []  # (market, label, sel, p, decimal_odds) for Best Bets
         with c1:
             for mkt, sels in markets.items():
                 st.markdown(f"**{mkt}** · *{engines[mkt]}*")
@@ -650,11 +661,25 @@ def view_betting():
                     with col:
                         st.metric(label, f"{p:.1%}",
                                   help="model probability")
-                        odds = st.number_input(
-                            "odds", min_value=1.01, value=round(1 / p, 2)
-                            if p > 0.02 else 50.0, step=0.05,
-                            key=f"odds_{mkt}_{sel}",
-                            label_visibility="collapsed")
+                        fair = round(1 / p, 2) if p > 0.02 else 50.0
+                        if fmt == "American":
+                            raw = st.number_input(
+                                "book odds (American)",
+                                value=float(decimal_to_american(fair)),
+                                step=5.0, key=f"odds_us_{mkt}_{sel}",
+                                label_visibility="collapsed")
+                            try:
+                                odds = american_to_decimal(raw)
+                            except ValueError:
+                                st.caption("⚠️ needs ≤ −100 or ≥ +100")
+                                continue
+                        else:
+                            odds = st.number_input(
+                                "book odds (decimal)", min_value=1.01,
+                                value=fair, step=0.05,
+                                key=f"odds_{mkt}_{sel}",
+                                label_visibility="collapsed")
+                        entered.append((mkt, label, sel, p, odds))
                         e = edge(p, odds)
                         stake = round(bankroll * kelly_mult
                                       * kelly_fraction(p, odds), 2)
@@ -662,7 +687,36 @@ def view_betting():
                         if e > 0 and st.button("Log bet",
                                                key=f"log_{mkt}_{sel}"):
                             append_bet(home, away, mkt, sel, odds, p, stake)
-                            st.success(f"Logged: {label} @ {odds}")
+                            st.success(f"Logged: {label} @ {odds:.2f}")
+
+        # --- Best Bets: verdicts on the odds entered above -------------------
+        st.subheader("Best bets — this fixture")
+        verdicts = pd.DataFrame(
+            [{"market": m, "selection": lbl, "model p": p,
+              "book odds": o if fmt == "Decimal" else decimal_to_american(o),
+              "edge": edge(p, o),
+              "verdict": ("🟢 undervalued" if edge(p, o) > 0.03 else
+                          "🔴 overpriced" if edge(p, o) < -0.03 else
+                          "⚪ fairly priced")}
+             for m, lbl, s, p, o in entered]).sort_values("edge",
+                                                          ascending=False)
+        if (verdicts["edge"].abs() < 0.005).all():
+            st.info("All selections sit at the model's own fair price — "
+                    "you haven't entered book odds yet, so there's nothing "
+                    "to disagree about. Value only exists relative to a "
+                    "price someone is offering.")
+        st.dataframe(
+            verdicts.style.format({"model p": "{:.1%}", "edge": "{:+.1%}",
+                                   "book odds": "{:.2f}" if fmt == "Decimal"
+                                   else "{:+.0f}"})
+                    .background_gradient(subset=["edge"], cmap="RdYlGn",
+                                         vmin=-0.10, vmax=0.10),
+            hide_index=True, use_container_width=True)
+        st.caption("🟢 edge > +3%: the book pays more than the model thinks "
+                   "the outcome is worth · ⚪ within ±3%: priced about "
+                   "right · 🔴 below −3%: the book's margin (or its squad "
+                   "info) is winning. Thresholds are conventions, not laws; "
+                   "a 🟢 is a model opinion, not a guarantee.")
 
     st.divider()
     st.subheader("Paper ledger")

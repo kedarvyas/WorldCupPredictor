@@ -9,6 +9,20 @@ import pandas as pd
 from src.models.betting import LEDGER_COLS, edge, kelly_fraction, settle
 
 
+def test_odds_format_conversion():
+    from src.models.betting import american_to_decimal, decimal_to_american
+    assert american_to_decimal(250) == 3.5
+    assert american_to_decimal(-400) == 1.25
+    assert american_to_decimal(100) == 2.0
+    assert american_to_decimal(-100) == 2.0
+    assert decimal_to_american(3.5) == 250
+    assert decimal_to_american(1.25) == -400
+    assert decimal_to_american(2.0) == 100
+    # round-trips
+    for a in (-400, -150, -101, 100, 137, 603, 1581):
+        assert abs(decimal_to_american(american_to_decimal(a)) - a) <= 1
+
+
 def test_edge_and_kelly():
     assert abs(edge(0.5, 2.2) - 0.10) < 1e-12       # 50% at 2.2 -> +10%
     assert abs(edge(0.5, 2.0) - 0.0) < 1e-12        # fair odds -> no edge

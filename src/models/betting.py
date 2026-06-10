@@ -29,6 +29,20 @@ LEDGER_COLS = ["placed_at_utc", "home_team", "away_team", "market",
                "selection", "decimal_odds", "model_p", "stake"]
 
 
+def american_to_decimal(a: float) -> float:
+    """+250 -> 3.50; -400 -> 1.25. |a| must be >= 100."""
+    if abs(a) < 100:
+        raise ValueError(f"American odds must be <= -100 or >= +100, got {a}")
+    return 1.0 + (a / 100.0 if a > 0 else 100.0 / abs(a))
+
+
+def decimal_to_american(d: float) -> float:
+    """3.50 -> +250; 1.25 -> -400. d must be > 1."""
+    if d <= 1.0:
+        raise ValueError(f"decimal odds must exceed 1, got {d}")
+    return round((d - 1.0) * 100.0) if d >= 2.0 else -round(100.0 / (d - 1.0))
+
+
 def edge(p: float, odds: float) -> float:
     return p * odds - 1.0
 
