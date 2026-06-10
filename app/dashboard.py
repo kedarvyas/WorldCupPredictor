@@ -256,9 +256,18 @@ def view_live_sim():
     model_choice = c1.selectbox("Forecast model", list(MODEL_LOCKS))
     n_sims = c2.selectbox("Simulations", [2000, 5000, 10000], index=1)
     run = c3.button("▶ Run simulation", type="primary")
+    resample = st.checkbox(
+        "Fresh randomness each run", value=False,
+        help="Off (default): a fixed seed per evidence-state, so repeated "
+             "runs are identical and any change you see reflects new "
+             "results, never noise. On: each run draws new random "
+             "tournaments — re-running shows the Monte Carlo error "
+             "(~±0.7pp on a champion probability at 5k sims). The wobble "
+             "is sampling noise, not the model changing its mind.")
 
     if run:
-        rng_seed = 2026 + len(results) + 100 * len(ko_res)
+        rng_seed = (int(np.random.default_rng().integers(2**31)) if resample
+                    else 2026 + len(results) + 100 * len(ko_res))
         with st.spinner(f"Simulating {n_sims:,} tournaments…"):
             if "Dixon" in model_choice:
                 probs, sampler = dc_tables(fitted_dc(),
@@ -270,15 +279,16 @@ def view_live_sim():
                                        seed=rng_seed, group_results=results,
                                        ko_results=ko_res, return_nodes=True)
         st.session_state["live_sim"] = (out, nodes, model_choice, n_sims,
-                                        len(results), len(ko_res))
+                                        len(results), len(ko_res), rng_seed)
 
     if "live_sim" not in st.session_state:
         st.info("Pick a model and hit **Run simulation**.")
         return
     (out, nodes, used_model, used_n,
-     used_gr, used_ko) = st.session_state["live_sim"]
+     used_gr, used_ko, used_seed) = st.session_state["live_sim"]
     st.markdown(f"*{used_n:,} simulations · {used_model} · {used_gr} group "
-                f"+ {used_ko} knockout result(s) locked in*")
+                f"+ {used_ko} knockout result(s) locked in · "
+                f"seed {used_seed}*")
 
     tab_groups, tab_ko = st.tabs(["Groups", "Knockout"])
 
