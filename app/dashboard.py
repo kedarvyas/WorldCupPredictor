@@ -517,6 +517,75 @@ def view_match():
         columns=[f"{team_a} - {team_b}", "probability"]))
 
 
+def view_market():
+    st.header("Market vs models — who does the bookmaker agree with?")
+    from src.models.market import SOURCE, market_probs
+
+    mkt, over = market_probs()
+    champ = load_sim(0)["champion"]
+    dc = load_sim(0, dc=True)["champion"]
+    if champ is None or dc is None:
+        st.warning("Run the simulations first.")
+        return
+    df = pd.DataFrame({"market": mkt, "LR (champion)": champ,
+                       "DC (challenger)": dc}).fillna(0.0)
+    df = df.sort_values("market", ascending=False)
+    df["LR − mkt"] = df["LR (champion)"] - df["market"]
+    df["DC − mkt"] = df["DC (challenger)"] - df["market"]
+
+    st.caption(f"Market: {SOURCE}. The raw odds embed a {over - 1:.1%} "
+               f"bookmaker margin, removed here by proportional "
+               f"normalization (the simplest de-vig; it slightly overstates "
+               f"longshots — favorite-longshot bias). Model numbers are the "
+               f"frozen 10k-simulation title odds. The market is not ground "
+               f"truth — it's a third, independent forecaster that prices "
+               f"squad information our models can't see.")
+
+    top = df.head(20)
+    lr_mad = (top["LR − mkt"].abs().mean())
+    dc_mad = (top["DC − mkt"].abs().mean())
+    lr_closer = int((top["LR − mkt"].abs() < top["DC − mkt"].abs()).sum())
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Mean |LR − market| (top 20)", f"{lr_mad:.1%}")
+    c2.metric("Mean |DC − market| (top 20)", f"{dc_mad:.1%}")
+    c3.metric("Teams where LR is closer", f"{lr_closer}/20")
+
+    left, right = st.columns([3, 2])
+    with left:
+        pct = ["market", "LR (champion)", "DC (challenger)"]
+        st.dataframe(
+            df.style.format({c: "{:.1%}" for c in pct}
+                            | {"LR − mkt": "{:+.1%}", "DC − mkt": "{:+.1%}"})
+              .background_gradient(subset=pct, cmap="Blues", axis=None,
+                                   vmin=0, vmax=0.20)
+              .background_gradient(subset=["LR − mkt", "DC − mkt"],
+                                   cmap="RdBu_r", vmin=-0.12, vmax=0.12),
+            height=620)
+    with right:
+        floor = 5e-5  # half a sim out of 10k: log-scale floor for zeros
+        fig, ax = plt.subplots(figsize=(5.5, 5.5))
+        for col, color in (("LR (champion)", "#2c3e50"),
+                           ("DC (challenger)", "#c0392b")):
+            ax.scatter(df["market"].clip(lower=floor),
+                       df[col].clip(lower=floor),
+                       s=22, alpha=0.75, color=color, label=col)
+        lims = [floor, 0.5]
+        ax.plot(lims, lims, "k--", alpha=0.4, label="perfect agreement")
+        ax.set_xscale("log"); ax.set_yscale("log")
+        ax.set_xlim(lims); ax.set_ylim(lims)
+        ax.set_xlabel("market (de-vigged)"); ax.set_ylabel("model")
+        for t in ("Brazil", "Spain", "France"):
+            ax.annotate(t, (df.loc[t, "market"],
+                            df.loc[t, "DC (challenger)"]),
+                        fontsize=7, xytext=(4, 2),
+                        textcoords="offset points")
+        ax.legend(fontsize=8)
+        st.pyplot(fig)
+        st.caption("Log-log: distance from the diagonal = disagreement. "
+                   "Points on the floor are teams our sims give <1-in-10k "
+                   "title odds.")
+
+
 def view_model_card():
     st.header("Model card")
     st.markdown(f"""
@@ -591,6 +660,7 @@ PAGES = {"🏆 Tournament odds": view_tournament,
          "📅 Schedule & predictions": view_schedule,
          "🧮 Live simulator": view_live_sim,
          "⚔️ Match explorer": view_match,
+         "📈 Market vs models": view_market,
          "📋 Model card": view_model_card}
 
 st.sidebar.title("WC2026 Predictor")
