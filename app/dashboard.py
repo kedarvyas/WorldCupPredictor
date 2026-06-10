@@ -25,8 +25,8 @@ from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
 from src.simulation.fixture_preds import (LOCK_PATH,  # noqa: E402
                                           fixture_predictions)
 from src.simulation.fixture_preds import scoreline_dists as _scoreline_dists  # noqa: E402
-from src.simulation.group_sim import (played_results,  # noqa: E402
-                                      simulate_group_stage)
+from src.simulation.group_sim import (played_ko_results,  # noqa: E402
+                                      played_results, simulate_live)
 from src.simulation.simulate import (build_prob_tables, dc_tables,  # noqa: E402
                                      scoreline_sampler, team_state)
 
@@ -233,16 +233,23 @@ def current_results():
     return played_results()
 
 
-def view_group_sim():
-    st.header("Group simulator — live forecast")
+@st.cache_data
+def current_ko_results():
+    return played_ko_results()
+
+
+def view_live_sim():
+    st.header("Live simulator — groups & knockout")
     results = current_results()
-    st.caption(f"Simulates the group stage **conditioned on reality**: the "
-               f"{len(results)} group match(es) already played are held "
-               f"fixed at their actual scores; only the remaining "
-               f"{72 - len(results)} fixtures are sampled. Model parameters "
-               f"stay frozen at their pre-tournament fit — the forecast "
-               f"updates because the evidence grows, not the model. Refresh "
-               f"results on the Schedule view.")
+    ko_res = current_ko_results()
+    st.caption(f"Simulates the WHOLE remaining tournament **conditioned on "
+               f"reality**: {len(results)}/72 group results and "
+               f"{len(ko_res)} knockout result(s) are held fixed; only "
+               f"unplayed matches are sampled (drawn knockouts resolve via "
+               f"the real shootout winner). Model parameters stay frozen at "
+               f"their pre-tournament fit — the forecast updates because "
+               f"the evidence grows, not the model. Refresh results on the "
+               f"Schedule view.")
 
     c1, c2, c3 = st.columns([2, 1, 1])
     model_choice = c1.selectbox("Forecast model", list(MODEL_LOCKS))
@@ -250,41 +257,59 @@ def view_group_sim():
     run = c3.button("▶ Run simulation", type="primary")
 
     if run:
-        rng_seed = 2026 + len(results)  # new seed once new results arrive
-        with st.spinner(f"Simulating {n_sims:,} group stages…"):
+        rng_seed = 2026 + len(results) + 100 * len(ko_res)
+        with st.spinner(f"Simulating {n_sims:,} tournaments…"):
             if "Dixon" in model_choice:
                 probs, sampler = dc_tables(fitted_dc(),
                                            np.random.default_rng(rng_seed))
             else:
                 probs = build_prob_tables(load_model(), load_state())
                 sampler = scoreline_sampler(np.random.default_rng(rng_seed))
-            out = simulate_group_stage(probs, sampler, n_sims=n_sims,
-                                       seed=rng_seed, results=results)
-        st.session_state["group_sim"] = (out, model_choice, n_sims,
-                                         len(results))
+            out = simulate_live(probs, sampler, n_sims=n_sims, seed=rng_seed,
+                                group_results=results, ko_results=ko_res)
+        st.session_state["live_sim"] = (out, model_choice, n_sims,
+                                        len(results), len(ko_res))
 
-    if "group_sim" not in st.session_state:
+    if "live_sim" not in st.session_state:
         st.info("Pick a model and hit **Run simulation**.")
         return
-    out, used_model, used_n, used_results = st.session_state["group_sim"]
-    st.markdown(f"*{used_n:,} simulations · {used_model} · "
-                f"{used_results} result(s) locked in*")
+    out, used_model, used_n, used_gr, used_ko = st.session_state["live_sim"]
+    st.markdown(f"*{used_n:,} simulations · {used_model} · {used_gr} group "
+                f"+ {used_ko} knockout result(s) locked in*")
 
-    pct_cols = ["1st", "2nd", "3rd", "4th", "top2", "best_third", "advance"]
-    letters = sorted(GROUPS)
-    for i in range(0, len(letters), 3):
-        for col, g in zip(st.columns(3), letters[i:i + 3]):
-            with col:
-                st.markdown(f"**Group {g}**")
-                tbl = (out[out["group"] == g]
-                       .drop(columns="group")
-                       .sort_values("advance", ascending=False))
-                st.dataframe(
-                    tbl.style.format({c: "{:.0%}" for c in pct_cols}
-                                     | {"xPts": "{:.1f}"})
-                       .background_gradient(subset=["advance"], cmap="Greens",
-                                            vmin=0, vmax=1),
-                    height=178)
+    tab_groups, tab_ko = st.tabs(["Groups", "Knockout"])
+
+    with tab_groups:
+        pct_cols = ["1st", "2nd", "3rd", "4th", "top2", "best_third",
+                    "advance"]
+        letters = sorted(GROUPS)
+        for i in range(0, len(letters), 3):
+            for col, g in zip(st.columns(3), letters[i:i + 3]):
+                with col:
+                    st.markdown(f"**Group {g}**")
+                    tbl = (out[out["group"] == g][pct_cols + ["xPts"]]
+                           .sort_values("advance", ascending=False))
+                    st.dataframe(
+                        tbl.style.format({c: "{:.0%}" for c in pct_cols}
+                                         | {"xPts": "{:.1f}"})
+                           .background_gradient(subset=["advance"],
+                                                cmap="Greens",
+                                                vmin=0, vmax=1),
+                        height=178)
+
+    with tab_ko:
+        ko_cols = ["R32", "R16", "QF", "SF", "final", "champion"]
+        alive = out[out["champion"] > 0].sort_values("champion",
+                                                     ascending=False)
+        st.dataframe(
+            alive[["group"] + ko_cols]
+            .style.format({c: "{:.1%}" for c in ko_cols})
+            .background_gradient(subset=ko_cols, cmap="Blues", axis=None),
+            height=600)
+        eliminated = out[out["champion"] == 0]
+        if len(eliminated) and used_gr + used_ko > 0:
+            st.caption("Zero-title-odds teams hidden: "
+                       + ", ".join(sorted(eliminated.index)))
 
 
 def predict_pair(team_a, team_b, venue, tier):
@@ -494,7 +519,7 @@ against reality side by side.
 
 PAGES = {"🏆 Tournament odds": view_tournament,
          "📅 Schedule & predictions": view_schedule,
-         "🧮 Group simulator": view_group_sim,
+         "🧮 Live simulator": view_live_sim,
          "⚔️ Match explorer": view_match,
          "📋 Model card": view_model_card}
 
