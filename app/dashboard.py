@@ -387,7 +387,12 @@ against reality side by side.
 - No squad/injury/lineup information — ratings summarize results only.
 - Ratings frozen at tournament start (no in-tournament updating).
 - Champion scorelines are outcome-conditional global distributions, not
-  team-specific (the Dixon-Coles challenger fixes exactly this).
+  team-specific (the Dixon-Coles challenger fixes this **in the Schedule
+  view only**).
+- Tournament odds & Match explorer still run entirely on the champion:
+  the Monte Carlo's scoreline sampling (and thus group tiebreakers) is
+  team-blind, and DC's softer mismatch probabilities do not affect the
+  published title odds.
 - FIFA ranking feature excluded (source data ends 2024-06).
 - Penalty shootouts modeled as strength-weighted coin flips.
 - Single-tournament backtest: weak power to detect compounding bias.
