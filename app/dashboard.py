@@ -25,7 +25,10 @@ from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
 from src.simulation.fixture_preds import (LOCK_PATH,  # noqa: E402
                                           fixture_predictions)
 from src.simulation.fixture_preds import scoreline_dists as _scoreline_dists  # noqa: E402
-from src.simulation.simulate import team_state  # noqa: E402
+from src.simulation.group_sim import (played_results,  # noqa: E402
+                                      simulate_group_stage)
+from src.simulation.simulate import (build_prob_tables, dc_tables,  # noqa: E402
+                                     scoreline_sampler, team_state)
 
 REPORTS = ROOT / "reports"
 ROUND_LABELS = {"group_top2": "Top 2 in group", "third_qualified": "Best-8 third",
@@ -216,6 +219,72 @@ def view_schedule():
                "outcome that actually happened — green is good. A calibrated "
                "model should average ~45–50% here, not 100%: upsets are "
                "supposed to happen at their stated rates.")
+
+
+@st.cache_resource(show_spinner="Fitting Dixon-Coles (first run only)…")
+def fitted_dc():
+    from src.models.dixon_coles import TRAIN_START, DixonColes
+    m = pd.read_csv(DATA_PROCESSED / "matches.csv", parse_dates=["date"])
+    return DixonColes(half_life_years=10.0).fit(m[m["date"] >= TRAIN_START])
+
+
+@st.cache_data
+def current_results():
+    return played_results()
+
+
+def view_group_sim():
+    st.header("Group simulator — live forecast")
+    results = current_results()
+    st.caption(f"Simulates the group stage **conditioned on reality**: the "
+               f"{len(results)} group match(es) already played are held "
+               f"fixed at their actual scores; only the remaining "
+               f"{72 - len(results)} fixtures are sampled. Model parameters "
+               f"stay frozen at their pre-tournament fit — the forecast "
+               f"updates because the evidence grows, not the model. Refresh "
+               f"results on the Schedule view.")
+
+    c1, c2, c3 = st.columns([2, 1, 1])
+    model_choice = c1.selectbox("Forecast model", list(MODEL_LOCKS))
+    n_sims = c2.selectbox("Simulations", [2000, 5000, 10000], index=1)
+    run = c3.button("▶ Run simulation", type="primary")
+
+    if run:
+        rng_seed = 2026 + len(results)  # new seed once new results arrive
+        with st.spinner(f"Simulating {n_sims:,} group stages…"):
+            if "Dixon" in model_choice:
+                probs, sampler = dc_tables(fitted_dc(),
+                                           np.random.default_rng(rng_seed))
+            else:
+                probs = build_prob_tables(load_model(), load_state())
+                sampler = scoreline_sampler(np.random.default_rng(rng_seed))
+            out = simulate_group_stage(probs, sampler, n_sims=n_sims,
+                                       seed=rng_seed, results=results)
+        st.session_state["group_sim"] = (out, model_choice, n_sims,
+                                         len(results))
+
+    if "group_sim" not in st.session_state:
+        st.info("Pick a model and hit **Run simulation**.")
+        return
+    out, used_model, used_n, used_results = st.session_state["group_sim"]
+    st.markdown(f"*{used_n:,} simulations · {used_model} · "
+                f"{used_results} result(s) locked in*")
+
+    pct_cols = ["1st", "2nd", "3rd", "4th", "top2", "best_third", "advance"]
+    letters = sorted(GROUPS)
+    for i in range(0, len(letters), 3):
+        for col, g in zip(st.columns(3), letters[i:i + 3]):
+            with col:
+                st.markdown(f"**Group {g}**")
+                tbl = (out[out["group"] == g]
+                       .drop(columns="group")
+                       .sort_values("advance", ascending=False))
+                st.dataframe(
+                    tbl.style.format({c: "{:.0%}" for c in pct_cols}
+                                     | {"xPts": "{:.1f}"})
+                       .background_gradient(subset=["advance"], cmap="Greens",
+                                            vmin=0, vmax=1),
+                    height=178)
 
 
 def predict_pair(team_a, team_b, venue, tier):
@@ -425,6 +494,7 @@ against reality side by side.
 
 PAGES = {"🏆 Tournament odds": view_tournament,
          "📅 Schedule & predictions": view_schedule,
+         "🧮 Group simulator": view_group_sim,
          "⚔️ Match explorer": view_match,
          "📋 Model card": view_model_card}
 
