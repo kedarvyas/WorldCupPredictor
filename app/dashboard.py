@@ -20,6 +20,7 @@ sys.path.insert(0, str(ROOT))
 from src.config import DATA_PROCESSED, MODELS_DIR  # noqa: E402
 from src.features.elo import match_tier  # noqa: E402
 from src.models.train import TIERS, proba_in_class_order  # noqa: E402
+from src.models.dixon_coles import DC_LOCK_PATH  # noqa: E402
 from src.simulation.bracket import GROUPS, HOSTS  # noqa: E402
 from src.simulation.fixture_preds import (LOCK_PATH,  # noqa: E402
                                           fixture_predictions)
@@ -60,12 +61,19 @@ def scoreline_dists():
     return _scoreline_dists()
 
 
+MODEL_LOCKS = {
+    "LR + Elo (champion)": LOCK_PATH,
+    "Dixon-Coles goals model (challenger)": DC_LOCK_PATH,
+}
+
+
 @st.cache_data
-def locked_predictions() -> tuple[pd.DataFrame, bool]:
-    """The frozen pre-tournament forecast (reports/predictions_2026_locked.csv).
-    Falls back to live computation only if the lock file is missing."""
-    if LOCK_PATH.exists():
-        df = pd.read_csv(LOCK_PATH, parse_dates=["date"])
+def locked_predictions(lock_file: str) -> tuple[pd.DataFrame, bool]:
+    """A frozen pre-tournament forecast. Falls back to live computation
+    (champion only) if the lock file is missing."""
+    path = Path(lock_file)
+    if path.exists():
+        df = pd.read_csv(path, parse_dates=["date"])
         df["date"] = df["date"].dt.date
         return df, True
     return fixture_predictions(load_model(), load_state()), False
@@ -84,13 +92,25 @@ def wc2026_results() -> pd.DataFrame:
 
 def view_schedule():
     st.header("Group-stage schedule: predictions vs reality")
-    locked, is_locked = locked_predictions()
+    model_choice = st.selectbox(
+        "Forecast model", list(MODEL_LOCKS),
+        help="Champion/challenger: both forecasts were frozen before kickoff "
+             "and face the same results. Champion = outcome model (Elo + "
+             "logistic regression; better validation log-loss: 0.871 vs "
+             "0.891) with global scorelines. Challenger = Dixon-Coles "
+             "goals model: team-specific attack/defense rates, so its "
+             "scorelines distinguish Spain–Cape Verde (2-0) from "
+             "France–England (1-1).")
+    locked, is_locked = locked_predictions(str(MODEL_LOCKS[model_choice]))
     if is_locked:
-        st.caption("Predictions **frozen 2026-06-10**, the day before kickoff "
-                   "— results update; the forecast cannot. Scorelines are "
-                   "outcome-conditional modern-era distributions (not "
-                   "team-specific); true home advantage applies only to "
-                   "USA/Mexico/Canada matches.")
+        scoreline_note = (
+            "team-specific Poisson score matrices (attack × defense)"
+            if "Dixon" in model_choice else
+            "outcome-conditional modern-era distributions (not team-specific)")
+        st.caption(f"Predictions **frozen 2026-06-10**, the day before "
+                   f"kickoff — results update; the forecast cannot. "
+                   f"Scorelines are {scoreline_note}; true home advantage "
+                   f"applies only to USA/Mexico/Canada matches.")
     else:
         st.warning("Lock file missing — showing live-computed predictions. "
                    "Run `python -m src.simulation.fixture_preds` to freeze.")
@@ -337,7 +357,8 @@ difference. Every feature uses **only pre-match information** (unit-tested).
 | B1 — Elo hard pick (clipped) | 60.2% | 8.27 | — |
 | B2 — Elo curve | 60.2% | 0.895 | 0.526 |
 | B3 — FIFA-rank pick | 57.3% | — | — |
-| **LR (published)** | **60.1%** | **0.871** | **0.512** |
+| **LR (champion, published)** | **60.1%** | **0.871** | **0.512** |
+| Dixon-Coles (challenger) | 59.3% | 0.891 | 0.524 |
 
 The model's edge over B2 is **probability quality** (draw probability varies
 with closeness: ~28% for even matches → ~14% at a 400-pt Elo gap), not pick
@@ -354,10 +375,19 @@ the 2022 World Cup simulated 10,000×: Brazil favorite at 34.7%, **Argentina
 (log-loss 1.64 vs 1.63 — within single-tournament noise), so the primary
 forecast uses σ=0 and the slider is provided as sensitivity analysis.
 
+**Challenger: Dixon-Coles goals model.** Per-team attack/defense Poisson
+rates (hand-written likelihood, analytic gradient, L-BFGS; τ low-score
+correction ρ=−0.04, home boost γ=0.30, 10y-half-life decay, ridge-regularized).
+Slightly worse on *outcomes* than the champion (0.891 vs 0.871), but its
+scorelines are team-specific — Spain–Cape Verde 2-0, not the global 1-0.
+Both forecasts were frozen pre-kickoff; the Schedule view scores them
+against reality side by side.
+
 **Known limitations**
 - No squad/injury/lineup information — ratings summarize results only.
 - Ratings frozen at tournament start (no in-tournament updating).
-- Scorelines are outcome-conditional global distributions, not team-specific.
+- Champion scorelines are outcome-conditional global distributions, not
+  team-specific (the Dixon-Coles challenger fixes exactly this).
 - FIFA ranking feature excluded (source data ends 2024-06).
 - Penalty shootouts modeled as strength-weighted coin flips.
 - Single-tournament backtest: weak power to detect compounding bias.
