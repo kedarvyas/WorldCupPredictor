@@ -318,6 +318,32 @@ def view_live_sim():
                    "often they appear there across simulations. Slots at "
                    "100% are locked in by real results; everything else is "
                    "still probability.")
+        st.subheader("Title odds — pre-tournament vs now")
+        baseline = load_sim(0, dc="Dixon" in used_model)
+        if baseline is None:
+            st.warning("Pre-tournament baseline CSV missing for this model.")
+        else:
+            comp = pd.DataFrame({"pre-tournament": baseline["champion"],
+                                 "now": out["champion"]}).fillna(0.0)
+            comp["Δ (pp)"] = (comp["now"] - comp["pre-tournament"]) * 100
+            comp = comp[comp[["pre-tournament", "now"]].max(axis=1) >= 0.005]
+            comp = comp.reindex(
+                comp["Δ (pp)"].abs().sort_values(ascending=False).index)
+            st.dataframe(
+                comp.style.format({"pre-tournament": "{:.1%}",
+                                   "now": "{:.1%}", "Δ (pp)": "{:+.1f}"})
+                    .background_gradient(subset=["Δ (pp)"], cmap="RdYlGn",
+                                         vmin=-5, vmax=5),
+                height=420)
+            st.caption("Baseline = this model's LOCKED pre-tournament 10k-"
+                       "sim (champion vs champion, DC vs DC — baselines are "
+                       "never crossed; the two models' pre-tournament "
+                       "numbers differ hugely, so mixing them would "
+                       "manufacture fake movement). With few results in, "
+                       "moves within ±1pp are Monte Carlo noise — real "
+                       "signal looks like a result, e.g. a favorite "
+                       "dropping points.")
+
         with st.expander("Full survival table"):
             ko_cols = ["R32", "R16", "QF", "SF", "final", "champion"]
             alive = out[out["champion"] > 0].sort_values("champion",
