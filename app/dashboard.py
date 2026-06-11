@@ -904,13 +904,69 @@ against reality side by side.
 """)
 
 
+def view_about():
+    st.header("About this project")
+    st.markdown("""
+**A FIFA World Cup 2026 forecasting system built from scratch** — match
+data to calibrated probabilities to a full tournament Monte Carlo to this
+dashboard. Built as a first ML project with a teacher-style workflow:
+every method explained before it was coded, every claim validated before
+it was trusted.
+
+#### What it does
+- **Predicts match outcomes** (win/draw/loss) with two independently
+  validated models:
+  - *Champion*: multinomial logistic regression on hand-computed Elo
+    ratings (importance-weighted K, margin-of-victory, home-advantage
+    offset), recent form, venue and match-importance features
+  - *Challenger*: a Dixon-Coles (1997) goals model — per-team attack and
+    defense rates, low-score correlation correction, time-decayed maximum
+    likelihood, hand-derived gradient
+- **Simulates the 2026 World Cup** 10,000× — the real 48-team format,
+  12 groups, best-8-thirds selection with the full FIFA tiebreaker
+  cascade, the official Round-of-32 bracket — to produce title odds and
+  round-by-round survival probabilities
+- **Updates live during the tournament**: played matches are held fixed
+  at their real scores (penalty shootouts resolved via the shootout
+  record) and only the remaining fixtures are sampled
+- **Compares against the betting market**: de-vigged sportsbook odds vs
+  both models, plus a paper-trading ledger that settles itself against
+  real results
+
+#### Methodology principles (the actual point of the project)
+1. **Temporal validation only** — train on the past, validate on the
+   future; a random split would leak.
+2. **No feature leakage** — every feature uses strictly pre-match
+   information, enforced by unit tests that flip a match result and
+   assert the match's own features don't move.
+3. **Beat the baselines** — naive Elo-pick and base-rate baselines first;
+   the model must earn its complexity.
+4. **Probabilities over picks** — log-loss, Brier score, and reliability
+   curves; accuracy alone can't see overconfidence.
+5. **Pre-registration** — all 144 fixture forecasts (both models) were
+   locked and SHA256-receipted before kickoff; the dashboard grades them
+   against reality with no possibility of quiet revision.
+
+#### Honest limitations
+No squad/injury/lineup data (results only — the biggest gap vs
+bookmakers), ratings frozen at tournament start, single-tournament
+backtest power. Full details in the Model card.
+
+#### Stack
+Python · pandas · NumPy · scikit-learn · SciPy · Streamlit · Matplotlib ·
+Seaborn — data from the open international results dataset (1872–present),
+FIFA rankings, and DraftKings title odds.
+""")
+
+
 PAGES = {"🏆 Tournament odds": view_tournament,
          "📅 Schedule & predictions": view_schedule,
          "🧮 Live simulator": view_live_sim,
          "⚔️ Match explorer": view_match,
          "📈 Market vs models": view_market,
          "🎟️ Betting board": view_betting,
-         "📋 Model card": view_model_card}
+         "📋 Model card": view_model_card,
+         "ℹ️ About": view_about}
 
 st.sidebar.title("WC2026 Predictor")
 choice = st.sidebar.radio("View", list(PAGES))
