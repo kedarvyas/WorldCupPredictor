@@ -241,6 +241,29 @@ def current_ko_results():
     return played_ko_results()
 
 
+def _sim_engine(model_choice, seed):
+    rng = np.random.default_rng(seed)
+    if "Dixon" in model_choice:
+        return dc_tables(fitted_dc(), rng)
+    return (build_prob_tables(load_model(), load_state()),
+            scoreline_sampler(rng))
+
+
+def _single_winners(nodes):
+    """For a 1-sim nodes dict, derive each match's winner: the entrant who
+    also appears in its parent node (the champion, for the final)."""
+    from src.simulation.bracket import FINAL, QF, R16, SF
+    feeders = {**R16, **QF, **SF, **FINAL}
+    parent = {f: m for m, (fa, fb) in feeders.items() for f in (fa, fb)}
+    champion = max(nodes["champion"], key=nodes["champion"].get)
+    winners = {104: champion}
+    for m, p in parent.items():
+        cand = [t for t in nodes[m] if t in nodes[p]]
+        if cand:
+            winners[m] = cand[0]
+    return winners, champion
+
+
 def view_live_sim():
     st.header("Live simulator — groups & knockout")
     results = current_results()
@@ -271,12 +294,7 @@ def view_live_sim():
         rng_seed = (int(np.random.default_rng().integers(2**31)) if resample
                     else 2026 + len(results) + 100 * len(ko_res))
         with st.spinner(f"Simulating {n_sims:,} tournaments…"):
-            if "Dixon" in model_choice:
-                probs, sampler = dc_tables(fitted_dc(),
-                                           np.random.default_rng(rng_seed))
-            else:
-                probs = build_prob_tables(load_model(), load_state())
-                sampler = scoreline_sampler(np.random.default_rng(rng_seed))
+            probs, sampler = _sim_engine(model_choice, rng_seed)
             out, nodes = simulate_live(probs, sampler, n_sims=n_sims,
                                        seed=rng_seed, group_results=results,
                                        ko_results=ko_res, return_nodes=True)
@@ -292,7 +310,8 @@ def view_live_sim():
                 f"+ {used_ko} knockout result(s) locked in · "
                 f"seed {used_seed}*")
 
-    tab_groups, tab_ko = st.tabs(["Groups", "Knockout"])
+    tab_groups, tab_ko, tab_one = st.tabs(
+        ["Groups", "Knockout", "🎲 One tournament"])
 
     with tab_groups:
         pct_cols = ["1st", "2nd", "3rd", "4th", "top2", "best_third",
@@ -317,7 +336,12 @@ def view_live_sim():
         st.caption("Each slot lists the two most likely occupants and how "
                    "often they appear there across simulations. Slots at "
                    "100% are locked in by real results; everything else is "
-                   "still probability.")
+                   "still probability. **Adjacent slots are independent "
+                   "probabilities, not one storyline** — a team can appear "
+                   "in a QF slot even though it's the underdog in its R16 "
+                   "slot: those are the simulations where it won. For a "
+                   "single consistent storyline, use the 🎲 One tournament "
+                   "tab.")
         st.subheader("Title odds — pre-tournament vs now")
         baseline = load_sim(0, dc="Dixon" in used_model)
         if baseline is None:
@@ -355,18 +379,47 @@ def view_live_sim():
                                      axis=None),
                 height=600)
 
+    with tab_one:
+        st.caption("🎲 **One complete simulated tournament** — a single "
+                   "random draw from the same model, not the odds. This is "
+                   "what most simulator sites show: one consistent "
+                   "storyline, different every click (an 80% favorite "
+                   "still loses this universe 1 time in 5). Played results "
+                   "are respected; everything else is dice.")
+        if st.button("🎲 Simulate one tournament"):
+            one_seed = int(np.random.default_rng().integers(2**31))
+            with st.spinner("Rolling one universe…"):
+                probs1, sampler1 = _sim_engine(model_choice, one_seed)
+                _, nodes1 = simulate_live(
+                    probs1, sampler1, n_sims=1, seed=one_seed,
+                    group_results=results, ko_results=ko_res,
+                    return_nodes=True)
+            st.session_state["one_sim"] = (nodes1, model_choice)
+        if "one_sim" in st.session_state:
+            nodes1, one_model = st.session_state["one_sim"]
+            winners1, champ1 = _single_winners(nodes1)
+            st.success(f"🏆 Champion of this universe: **{champ1}** "
+                       f"({one_model})")
+            st.markdown(_bracket_html(nodes1, winners=winners1),
+                        unsafe_allow_html=True)
 
-def _bracket_html(nodes) -> str:
+
+def _bracket_html(nodes, winners=None) -> str:
     order = bracket_tree_order()
     titles = {"R32": "Round of 32", "R16": "Round of 16",
               "QF": "Quarterfinals", "SF": "Semifinals", "final": "Final"}
 
+    single = winners is not None
+
     def box(match_no):
         top = sorted(nodes.get(match_no, {}).items(),
                      key=lambda kv: -kv[1])[:2]
-        lines = "".join(
-            f"<div class='t'><em>{t}</em><span>{p:.0%}</span></div>"
-            for t, p in top)
+        lines = ""
+        for t, p in top:
+            won = single and winners.get(match_no) == t
+            cls = "t w" if won else "t"
+            val = "✓" if won else ("" if single else f"{p:.0%}")
+            lines += f"<div class='{cls}'><em>{t}</em><span>{val}</span></div>"
         return f"<div class='bx'>{lines or '<div class=t>—</div>'}</div>"
 
     cols = ""
@@ -375,9 +428,10 @@ def _bracket_html(nodes) -> str:
         cols += (f"<div class='rcol'><div class='hdr'>{titles[rnd]}</div>"
                  f"<div class='stack'>{boxes}</div></div>")
     champ = sorted(nodes.get("champion", {}).items(),
-                   key=lambda kv: -kv[1])[:3]
+                   key=lambda kv: -kv[1])[:1 if single else 3]
     champ_lines = "".join(
-        f"<div class='t'><em>{t}</em><span>{p:.0%}</span></div>"
+        f"<div class='t w'><em>{t}</em>"
+        + ("" if single else f"<span>{p:.0%}</span>") + "</div>"
         for t, p in champ)
     cols += (f"<div class='rcol'><div class='hdr'>🏆 Champion</div>"
              f"<div class='stack'><div class='bx champ'>{champ_lines}"
@@ -399,6 +453,8 @@ def _bracket_html(nodes) -> str:
 .bracket .t em {{ font-style:normal; overflow:hidden;
                   text-overflow:ellipsis; white-space:nowrap; }}
 .bracket .t span {{ color:#5a6172; font-variant-numeric:tabular-nums; }}
+.bracket .t.w em {{ font-weight:700; color:#1a7f37; }}
+.bracket .t.w span {{ color:#1a7f37; }}
 </style>
 <div class="bracket">{cols}</div>"""
 
