@@ -17,7 +17,7 @@ import streamlit as st
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 
-from src.config import DATA_PROCESSED, MODELS_DIR  # noqa: E402
+from src.config import DATA_PROCESSED, FIXTURES_FROZEN, MODELS_DIR  # noqa: E402
 from src.features.elo import match_tier  # noqa: E402
 from src.models.train import TIERS, proba_in_class_order  # noqa: E402
 from src.models.dixon_coles import DC_LOCK_PATH  # noqa: E402
@@ -130,6 +130,36 @@ def view_schedule():
             clean()
         st.cache_data.clear()
         st.rerun()
+
+    with st.expander("✍️ Enter a result manually (upstream data lags live "
+                     "matches)"):
+        st.caption("The Kaggle dataset updates on its maintainer's schedule "
+                   "— often hours or days behind a final whistle. Enter the "
+                   "full-time score here to update every view immediately; "
+                   "once upstream publishes the result, its data takes over "
+                   "and the manual entry becomes inert.")
+        res_now = wc2026_results()
+        frozen = pd.read_csv(FIXTURES_FROZEN)
+        done_pairs = set(zip(res_now["home_team"], res_now["away_team"])) \
+            if len(res_now) else set()
+        open_fx = frozen[~frozen.apply(
+            lambda r: (r["home_team"], r["away_team"]) in done_pairs, axis=1)]
+        c1, c2, c3, c4 = st.columns([3, 1, 1, 1])
+        label = c1.selectbox("Match", [
+            f"{r.home_team} vs {r.away_team}" for r in open_fx.itertuples()])
+        gh = c2.number_input("Home", min_value=0, max_value=15, value=0)
+        ga = c3.number_input("Away", min_value=0, max_value=15, value=0)
+        if c4.button("Save", type="primary"):
+            home, away = label.split(" vs ")
+            from src.data.clean import MANUAL_RESULTS, clean
+            row = pd.DataFrame([{"home_team": home, "away_team": away,
+                                 "home_score": int(gh),
+                                 "away_score": int(ga)}])
+            row.to_csv(MANUAL_RESULTS, mode="a", index=False,
+                       header=not MANUAL_RESULTS.exists())
+            clean()
+            st.cache_data.clear()
+            st.rerun()
 
     res = wc2026_results()
     fx = locked.merge(res, on=["home_team", "away_team"], how="left")
