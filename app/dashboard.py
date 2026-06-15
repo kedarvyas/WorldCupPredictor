@@ -707,12 +707,19 @@ def view_betting():
                "prices (see Market vs models: France) are exactly what we "
                "must beat. Expectation set by the model card, not hype.")
 
-    from src.models.betting import (american_to_decimal, append_bet, clv,
-                                    decimal_to_american, devig, edge,
-                                    kelly_fraction, load_ledger,
+    from src.models.betting import (LEDGER_PATH, american_to_decimal,
+                                    append_bet, clv, decimal_to_american,
+                                    devig, edge, kelly_fraction, load_ledger,
                                     save_closing_odds, settle)
     from src.models.recalibrate import apply as recal_apply
     from src.models.recalibrate import load_params, over_prob
+    import src.storage as storage
+
+    # On cloud the filesystem is ephemeral; pull the persisted ledger from the
+    # gist once per session (no-op locally / when persistence is unconfigured).
+    if storage.enabled() and not st.session_state.get("ledger_pulled"):
+        storage.pull(LEDGER_PATH)
+        st.session_state["ledger_pulled"] = True
 
     results = current_results()
     locked, _ = locked_predictions(str(LOCK_PATH))
@@ -837,6 +844,11 @@ def view_betting():
                         if st.button(f"Log: {label}", key=f"log_{mkt}_{sel}"):
                             append_bet(home, away, mkt, sel, odds, p, stake,
                                        bet_type=bet_type, edge_val=e)
+                            if storage.enabled() and not storage.push(
+                                    LEDGER_PATH):
+                                st.warning("Bet saved locally but the gist "
+                                           "sync failed — it may not survive "
+                                           "a redeploy.")
                             msg = f"Logged: {label} @ {odds:.2f}"
                             if e > 0:
                                 st.success(msg)
@@ -951,6 +963,8 @@ def view_betting():
             key="closing_editor")
         if st.button("Save closing odds"):
             save_closing_odds(edited)
+            if storage.enabled():
+                storage.push(LEDGER_PATH)
             st.success("Saved. CLV updates on the next rerun.")
             st.rerun()
 
@@ -1088,6 +1102,29 @@ PAGES = {"🏆 Tournament odds": view_tournament,
          "🎟️ Betting board": view_betting,
          "📋 Model card": view_model_card,
          "ℹ️ About": view_about}
+
+def _require_password():
+    """Gate the app behind a password when one is set in st.secrets (for the
+    public cloud URL). No secret configured -> no gate, so local runs on the
+    Mac are unchanged."""
+    try:
+        expected = st.secrets["password"]
+    except Exception:
+        return  # no secrets / no password -> open
+    if st.session_state.get("authenticated"):
+        return
+    st.title("WC2026 Predictor")
+    pw = st.text_input("Password", type="password")
+    if not pw:
+        st.stop()
+    if pw == expected:
+        st.session_state["authenticated"] = True
+        st.rerun()
+    st.error("Incorrect password.")
+    st.stop()
+
+
+_require_password()
 
 st.sidebar.title("WC2026 Predictor")
 choice = st.sidebar.radio("View", list(PAGES))

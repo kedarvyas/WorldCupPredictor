@@ -20,3 +20,4 @@ __pycache__/
 
 # Credentials — never commit
 kaggle.json
+.streamlit/secrets.toml
