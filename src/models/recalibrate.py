@@ -33,10 +33,18 @@ def _logit(p):
     return np.log(p / (1 - p))
 
 
-def over25_prob(dc, home, away, true_home=False) -> float:
+def over_prob(dc, home, away, line=2.5, true_home=False) -> float:
+    """P(total goals > line) from the DC score matrix, for any .5 line.
+
+    Only the 2.5 line is recalibrated (see recalibrate.fit); other lines are
+    raw DC matrix mass and should be labelled as such (display-grade)."""
     M = dc.score_matrix(home, away, true_home)
     tot = np.add.outer(np.arange(MAX_GOALS + 1), np.arange(MAX_GOALS + 1))
-    return float(M[tot > 2.5].sum())
+    return float(M[tot > line].sum())
+
+
+def over25_prob(dc, home, away, true_home=False) -> float:
+    return over_prob(dc, home, away, line=2.5, true_home=true_home)
 
 
 def fit() -> dict:

@@ -2,7 +2,12 @@
 
 Markets and engines:
 - 1X2 (moneyline): the LOCKED champion forecast (frozen pre-tournament)
-- Over/under 2.5 goals: DC score matrix + Platt recalibration
+- Over/under totals ladder (1.5/2.5/3.5/4.5): DC score matrix. Only the 2.5
+  line is Platt-recalibrated (recalibrate.fit fits that line only); the
+  other lines are raw DC mass, labelled as such in the dashboard. A ladder
+  matters because a single 2.5 line on a lopsided fixture (e.g. a heavy
+  favourite vs a minnow) sits far from 50/50, where the book's price leaves
+  no realistic value — a higher line is where any disagreement shows up.
 - Correct score: DC score matrix (display/track only — weakest validation,
   fattest bookmaker margins)
 
@@ -11,10 +16,16 @@ Edge and staking:
 - Kelly fraction = (p*o - 1) / (o - 1), bet only when positive; we use
   fractional Kelly (default 1/4) because full Kelly assumes p is exactly
   right, and ours carries model risk.
+- devig() strips the book's margin from a complete market so model edge can
+  be split into "the book's vig" vs "genuine model disagreement".
 
-The ledger (reports/paper_ledger.csv) is append-only and settles itself
-against real results — same philosophy as the locked-forecast scoreboard:
-predictions first, grading by reality, no edits after the fact.
+The ledger (reports/paper_ledger.csv) records each bet's edge and bet_type
+(value vs hunch) at placement so model-advised bets can be graded apart from
+hunches, plus a closing_odds field for closing-line value (clv) — the
+cleanest skill signal. Bet terms are append-only and the ledger settles
+itself against real results; only the observed closing line is filled in
+after the fact (save_closing_odds). Same philosophy as the locked-forecast
+scoreboard: predictions first, grading by reality, no edits after the fact.
 """
 
 from datetime import datetime, timezone
@@ -26,7 +37,8 @@ from src.config import PROJECT_ROOT
 
 LEDGER_PATH = PROJECT_ROOT / "reports" / "paper_ledger.csv"
 LEDGER_COLS = ["placed_at_utc", "home_team", "away_team", "market",
-               "selection", "decimal_odds", "model_p", "stake"]
+               "selection", "decimal_odds", "model_p", "stake",
+               "bet_type", "edge", "closing_odds"]
 
 
 def american_to_decimal(a: float) -> float:
@@ -53,29 +65,79 @@ def kelly_fraction(p: float, odds: float) -> float:
     return max(0.0, (p * odds - 1.0) / (odds - 1.0))
 
 
+def devig(decimal_odds) -> np.ndarray:
+    """Proportional de-vig of a complete market's decimal odds.
+
+    Raw implied probs q_i = 1/o_i sum to MORE than 1 (the book's margin);
+    proportional normalization q_i / sum(q) strips it. Same method as the
+    title-odds de-vig (src/models/market.py); use only on a COMPLETE market
+    (e.g. all three 1X2 outcomes, both O/U sides) — not a partial set like
+    the top-3 correct scores."""
+    q = 1.0 / np.asarray(decimal_odds, dtype=float)
+    return q / q.sum()
+
+
+def clv(placed_odds: float, closing_odds: float) -> float:
+    """Closing-line value: how much better your price was than the close.
+
+    Measured on de-vig-free decimal odds as placed/closing - 1. Positive
+    means you beat the close (locked a better price than the market settled
+    at) — the cleanest skill signal in betting, less variance-bound than P/L.
+    Returns NaN when no closing line was recorded."""
+    if not closing_odds or closing_odds <= 1.0:
+        return float("nan")
+    return placed_odds / closing_odds - 1.0
+
+
 def load_ledger() -> pd.DataFrame:
-    if LEDGER_PATH.exists():
-        return pd.read_csv(LEDGER_PATH)
-    return pd.DataFrame(columns=LEDGER_COLS)
+    """Load the ledger, backfilling columns added after early rows were
+    written. edge and bet_type are recomputed deterministically from the
+    bet's own model_p/odds; closing_odds stays blank until recorded."""
+    if not LEDGER_PATH.exists():
+        return pd.DataFrame(columns=LEDGER_COLS)
+    df = pd.read_csv(LEDGER_PATH)
+    if "edge" not in df.columns:
+        df["edge"] = df["model_p"] * df["decimal_odds"] - 1.0
+    if "bet_type" not in df.columns:
+        df["bet_type"] = np.where(df["edge"] > 0, "value", "hunch")
+    if "closing_odds" not in df.columns:
+        df["closing_odds"] = np.nan
+    return df.reindex(columns=LEDGER_COLS)
 
 
-def append_bet(home, away, market, selection, odds, model_p, stake) -> None:
+def append_bet(home, away, market, selection, odds, model_p, stake,
+               bet_type=None, edge_val=None, closing_odds=None) -> None:
+    odds, model_p = float(odds), float(model_p)
+    edge_val = float(edge_val) if edge_val is not None else edge(model_p, odds)
+    bet_type = bet_type or ("value" if edge_val > 0 else "hunch")
     row = pd.DataFrame([{
         "placed_at_utc": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "home_team": home, "away_team": away, "market": market,
-        "selection": selection, "decimal_odds": float(odds),
-        "model_p": float(model_p), "stake": float(stake)}])
+        "selection": selection, "decimal_odds": odds,
+        "model_p": model_p, "stake": float(stake),
+        "bet_type": bet_type, "edge": edge_val,
+        "closing_odds": float(closing_odds) if closing_odds else np.nan}])
     header = not LEDGER_PATH.exists()
     LEDGER_PATH.parent.mkdir(exist_ok=True)
-    row.to_csv(LEDGER_PATH, mode="a", header=header, index=False)
+    row.reindex(columns=LEDGER_COLS).to_csv(
+        LEDGER_PATH, mode="a", header=header, index=False)
+
+
+def save_closing_odds(updated: pd.DataFrame) -> None:
+    """Persist edited closing_odds back to the ledger. Only the closing
+    line is observed reference data recorded after the fact; bet terms
+    (stake, odds, selection) stay immutable, so the rest is rewritten
+    verbatim from the in-memory ledger."""
+    updated.reindex(columns=LEDGER_COLS).to_csv(LEDGER_PATH, index=False)
 
 
 def _won(row, gh: int, ga: int) -> bool:
     if row["market"] == "1X2":
         actual = "home" if gh > ga else ("away" if ga > gh else "draw")
         return row["selection"] == actual
-    if row["market"] == "O/U 2.5":
-        return (gh + ga > 2.5) == (row["selection"] == "over")
+    if row["market"].startswith("O/U "):
+        line = float(row["market"].split()[1])
+        return (gh + ga > line) == (row["selection"] == "over")
     if row["market"] == "Correct score":
         return row["selection"] == f"{gh}-{ga}"
     raise ValueError(f"unknown market {row['market']}")

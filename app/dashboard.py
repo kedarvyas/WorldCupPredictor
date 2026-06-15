@@ -707,11 +707,12 @@ def view_betting():
                "prices (see Market vs models: France) are exactly what we "
                "must beat. Expectation set by the model card, not hype.")
 
-    from src.models.betting import (american_to_decimal, append_bet,
-                                    decimal_to_american, edge,
-                                    kelly_fraction, load_ledger, settle)
+    from src.models.betting import (american_to_decimal, append_bet, clv,
+                                    decimal_to_american, devig, edge,
+                                    kelly_fraction, load_ledger,
+                                    save_closing_odds, settle)
     from src.models.recalibrate import apply as recal_apply
-    from src.models.recalibrate import load_params, over25_prob
+    from src.models.recalibrate import load_params, over_prob
 
     results = current_results()
     locked, _ = locked_predictions(str(LOCK_PATH))
@@ -730,9 +731,17 @@ def view_betting():
         fx = pd.read_csv(DATA_PROCESSED / "wc2026_fixtures_frozen.csv")
         neutral = bool(fx[(fx["home_team"] == home)
                           & (fx["away_team"] == away)]["neutral"].iloc[0])
-        p_over = float(recal_apply(
-            over25_prob(dc, home, away, true_home=not neutral),
-            load_params()))
+
+        # Totals ladder: a single 2.5 line on a lopsided fixture sits far
+        # from 50/50, where the book's price leaves no value. Show a ladder
+        # and flag the line nearest a coin-flip. Only 2.5 is recalibrated
+        # (the Platt fit is 2.5-specific); other lines are raw DC mass.
+        TOTAL_LINES = [1.5, 2.5, 3.5, 4.5]
+        over_p = {ln: over_prob(dc, home, away, line=ln, true_home=not neutral)
+                  for ln in TOTAL_LINES}
+        over_p[2.5] = float(recal_apply(over_p[2.5], load_params()))
+        balanced = min(TOTAL_LINES, key=lambda ln: abs(over_p[ln] - 0.5))
+
         M = dc.score_matrix(home, away, true_home=not neutral)
         flat = sorted(((f"{i}-{j}", M[i, j]) for i in range(7)
                        for j in range(7)), key=lambda t: -t[1])[:3]
@@ -753,26 +762,31 @@ def view_betting():
                    "Overwrite them with your book's odds — edge and Best "
                    "Bets compare model vs book.")
 
-        markets = {
-            "1X2": {f"{home} (home)": ("home", row["p_home"]),
-                    "Draw": ("draw", row["p_draw"]),
-                    f"{away} (away)": ("away", row["p_away"])},
-            "O/U 2.5": {"Over 2.5": ("over", p_over),
-                        "Under 2.5": ("under", 1 - p_over)},
-            "Correct score": {f"{s}": (s, p) for s, p in flat},
-        }
-        engines = {"1X2": "locked champion forecast",
-                   "O/U 2.5": "DC matrix + recalibration",
-                   "Correct score": "DC matrix — display-grade only"}
-        entered = []  # (market, label, sel, p, decimal_odds) for Best Bets
+        markets = {"1X2": {f"{home} (home)": ("home", row["p_home"]),
+                           "Draw": ("draw", row["p_draw"]),
+                           f"{away} (away)": ("away", row["p_away"])}}
+        engines = {"1X2": "locked champion forecast"}
+        for ln in TOTAL_LINES:
+            markets[f"O/U {ln}"] = {f"Over {ln}": ("over", over_p[ln]),
+                                    f"Under {ln}": ("under", 1 - over_p[ln])}
+            engines[f"O/U {ln}"] = (
+                "DC matrix + recalibration" if ln == 2.5
+                else "DC matrix — raw, uncalibrated")
+            if ln == balanced:
+                engines[f"O/U {ln}"] += " · ⚖️ balanced line (nearest 50/50)"
+        markets["Correct score"] = {f"{s}": (s, p) for s, p in flat}
+        engines["Correct score"] = "DC matrix — display-grade only"
+        entered = []  # (market, label, sel, p, odds, mkt_p) for Best Bets
         with c1:
             for mkt, sels in markets.items():
                 st.markdown(f"**{mkt}** · *{engines[mkt]}*")
                 cols = st.columns(len(sels))
+                # Pass 1: render inputs and collect every leg's book odds, so
+                # a complete market can be de-vigged before any leg is judged.
+                legs = []  # (col, label, sel, p, odds)
                 for col, (label, (sel, p)) in zip(cols, sels.items()):
                     with col:
-                        st.metric(label, f"{p:.1%}",
-                                  help="model probability")
+                        st.metric(label, f"{p:.1%}", help="model probability")
                         fair = round(1 / p, 2) if p > 0.02 else 50.0
                         if fmt == "American":
                             raw = st.number_input(
@@ -791,8 +805,20 @@ def view_betting():
                                 value=fair, step=0.05,
                                 key=f"odds_{mkt}_{sel}",
                                 label_visibility="collapsed")
-                        entered.append((mkt, label, sel, p, odds))
-                        e = edge(p, odds)
+                    legs.append((col, label, sel, p, odds))
+
+                # De-vig only a COMPLETE market (all 1X2 outcomes, both O/U
+                # sides); the top-3 correct scores are a partial set.
+                complete = mkt == "1X2" or mkt.startswith("O/U ")
+                mkt_ps = (devig([o for *_, o in legs]) if complete
+                          else [None] * len(legs))
+
+                # Pass 2: judge each leg now the market's vig is stripped.
+                for (col, label, sel, p, odds), mkt_p in zip(legs, mkt_ps):
+                    entered.append((mkt, label, sel, p, odds, mkt_p))
+                    e = edge(p, odds)
+                    bet_type = "value" if e > 0 else "hunch"
+                    with col:
                         if e > 0:
                             stake = round(bankroll * kelly_mult
                                           * kelly_fraction(p, odds), 2)
@@ -803,8 +829,14 @@ def view_betting():
                             stake = round(bankroll * 0.01, 2)
                             st.caption(f"edge {e:+.1%} · no value "
                                        f"(hunch stake {stake:.0f})")
+                        if mkt_p is not None:
+                            # Split the picture: de-vigged fair market price
+                            # vs the model — pure disagreement, margin removed.
+                            st.caption(f"mkt {mkt_p:.0%} · disagree "
+                                       f"{p - mkt_p:+.1%}")
                         if st.button(f"Log: {label}", key=f"log_{mkt}_{sel}"):
-                            append_bet(home, away, mkt, sel, odds, p, stake)
+                            append_bet(home, away, mkt, sel, odds, p, stake,
+                                       bet_type=bet_type, edge_val=e)
                             msg = f"Logged: {label} @ {odds:.2f}"
                             if e > 0:
                                 st.success(msg)
@@ -817,12 +849,14 @@ def view_betting():
         st.subheader("Best bets — this fixture")
         verdicts = pd.DataFrame(
             [{"market": m, "selection": lbl, "model p": p,
+              "mkt (de-vig)": mp if mp is not None else float("nan"),
+              "disagree": (p - mp) if mp is not None else float("nan"),
               "book odds": o if fmt == "Decimal" else decimal_to_american(o),
               "edge": edge(p, o),
               "verdict": ("🟢 undervalued" if edge(p, o) > 0.03 else
                           "🔴 overpriced" if edge(p, o) < -0.03 else
                           "⚪ fairly priced")}
-             for m, lbl, s, p, o in entered]).sort_values("edge",
+             for m, lbl, s, p, o, mp in entered]).sort_values("edge",
                                                           ascending=False)
         if (verdicts["edge"].abs() < 0.005).all():
             st.info("All selections sit at the model's own fair price — "
@@ -831,16 +865,19 @@ def view_betting():
                     "price someone is offering.")
         st.dataframe(
             verdicts.style.format({"model p": "{:.1%}", "edge": "{:+.1%}",
+                                   "mkt (de-vig)": "{:.1%}",
+                                   "disagree": "{:+.1%}",
                                    "book odds": "{:.2f}" if fmt == "Decimal"
-                                   else "{:+.0f}"})
+                                   else "{:+.0f}"}, na_rep="—")
                     .background_gradient(subset=["edge"], cmap="RdYlGn",
                                          vmin=-0.10, vmax=0.10),
             hide_index=True, use_container_width=True)
-        st.caption("🟢 edge > +3%: the book pays more than the model thinks "
-                   "the outcome is worth · ⚪ within ±3%: priced about "
-                   "right · 🔴 below −3%: the book's margin (or its squad "
-                   "info) is winning. Thresholds are conventions, not laws; "
-                   "a 🟢 is a model opinion, not a guarantee.")
+        st.caption("**edge** is real value at the price you typed (model p × "
+                   "odds − 1). **mkt (de-vig)** strips the book's margin so "
+                   "**disagree** = model − fair market is pure disagreement, "
+                   "vig removed. 🟢 edge > +3% · ⚪ within ±3% · 🔴 below −3% "
+                   "(margin or squad info winning). A 🟢 is a model opinion, "
+                   "not a guarantee.")
 
     st.divider()
     st.subheader("Paper ledger")
@@ -851,17 +888,71 @@ def view_betting():
         return
     settled = settle(ledger, results)
     done = settled[settled["status"] != "pending"]
+
+    def _roi(df):
+        s = df["stake"].sum()
+        return df["profit"].sum() / s if s else 0.0
+
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Bets", f"{len(settled)} ({len(done)} settled)")
     c2.metric("Staked (settled)", f"{done['stake'].sum():.0f}")
     c3.metric("P/L", f"{done['profit'].sum():+.0f}")
-    roi = (done["profit"].sum() / done["stake"].sum()
-           if done["stake"].sum() else 0)
-    c4.metric("ROI", f"{roi:+.1%}",
+    c4.metric("ROI", f"{_roi(done):+.1%}",
               help="Break-even means the model roughly priced the matches "
                    "as well as your book net of its margin — already a "
                    "strong result for a results-only model.")
+
+    # Segment value (model-advised) from hunch (logged against advice) so the
+    # one question that matters — did following the model's edges pay? — is
+    # answerable instead of blended away.
+    val_done = done[done["bet_type"] == "value"]
+    hunch_done = done[done["bet_type"] == "hunch"]
+    d1, d2, d3 = st.columns(3)
+    d1.metric("Value bets ROI", f"{_roi(val_done):+.1%}",
+              help=f"{len(val_done)} settled bets the model flagged as +edge.")
+    d2.metric("Hunch bets ROI", f"{_roi(hunch_done):+.1%}",
+              help=f"{len(hunch_done)} settled bets logged against the "
+                   "model's advice (flat 1% stake).")
+
+    # Closing-line value: the cleanest skill signal. Computed over settled
+    # bets that have a closing line recorded below.
+    have_close = done[done["closing_odds"].notna()]
+    if len(have_close):
+        avg_clv = np.mean([clv(o, c) for o, c
+                           in zip(have_close["decimal_odds"],
+                                  have_close["closing_odds"])])
+        beat = np.mean([clv(o, c) > 0 for o, c
+                        in zip(have_close["decimal_odds"],
+                               have_close["closing_odds"])])
+        d3.metric("Avg CLV", f"{avg_clv:+.1%}",
+                  help=f"Beat the close on {beat:.0%} of {len(have_close)} "
+                       "priced bets. Locking a better price than the market "
+                       "settles at is the strongest evidence of edge — far "
+                       "less variance-bound than P/L.")
+    else:
+        d3.metric("Avg CLV", "—",
+                  help="Record closing odds below to track closing-line "
+                       "value — whether you consistently beat the market's "
+                       "settling price.")
+
     st.dataframe(settled.iloc[::-1], height=320, hide_index=True)
+
+    # Record closing lines after the fact. Bet terms stay immutable; only the
+    # observed closing line is editable, then persisted (save_closing_odds).
+    with st.expander("Record closing odds (for CLV)"):
+        st.caption("Enter each bet's decimal odds at kickoff. Only the "
+                   "closing_odds column is editable — everything else is the "
+                   "locked bet record.")
+        edited = st.data_editor(
+            ledger, hide_index=True, use_container_width=True,
+            disabled=[c for c in ledger.columns if c != "closing_odds"],
+            column_config={"closing_odds": st.column_config.NumberColumn(
+                "closing_odds", min_value=1.01, step=0.05)},
+            key="closing_editor")
+        if st.button("Save closing odds"):
+            save_closing_odds(edited)
+            st.success("Saved. CLV updates on the next rerun.")
+            st.rerun()
 
 
 def view_model_card():

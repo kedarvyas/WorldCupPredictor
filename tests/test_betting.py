@@ -4,9 +4,11 @@ Runnable without pytest:
     .venv/bin/python -m tests.test_betting
 """
 
+import numpy as np
 import pandas as pd
 
-from src.models.betting import LEDGER_COLS, edge, kelly_fraction, settle
+from src.models.betting import (LEDGER_COLS, clv, devig, edge, kelly_fraction,
+                                settle)
 
 
 def test_odds_format_conversion():
@@ -31,8 +33,83 @@ def test_edge_and_kelly():
     assert kelly_fraction(0.2, 1.5) == 0.0          # negative edge -> 0
 
 
+def test_devig():
+    # Two-way market at 1.90/1.90: raw implied 0.526+0.526 = 1.053 overround;
+    # de-vig is symmetric back to 0.5/0.5.
+    dv = devig([1.9, 1.9])
+    assert abs(dv.sum() - 1.0) < 1e-12
+    assert abs(dv[0] - 0.5) < 1e-12
+    # Lopsided 3-way still normalizes to 1 and preserves ordering.
+    dv3 = devig([1.4, 4.5, 9.0])
+    assert abs(dv3.sum() - 1.0) < 1e-12
+    assert dv3[0] > dv3[1] > dv3[2]
+
+
+def test_clv():
+    # Took 2.10, market closed at 2.00 -> beat the close by +5%.
+    assert abs(clv(2.10, 2.00) - 0.05) < 1e-12
+    # Took a worse price than the close -> negative CLV.
+    assert clv(1.90, 2.00) < 0
+    # No closing line recorded -> NaN.
+    assert np.isnan(clv(2.0, None))
+    assert np.isnan(clv(2.0, float("nan")))
+
+
+def test_over_prob_ladder_monotone():
+    """P(total > line) must fall as the line rises, and sum DC matrix mass."""
+    from src.models.dixon_coles import MAX_GOALS
+    from src.models.recalibrate import over_prob
+
+    n = MAX_GOALS + 1
+    rng = np.random.default_rng(0)
+    M = rng.random((n, n))
+    M /= M.sum()
+
+    class _StubDC:
+        def score_matrix(self, home, away, true_home=False):
+            return M
+
+    dc = _StubDC()
+    p15 = over_prob(dc, "A", "B", line=1.5)
+    p25 = over_prob(dc, "A", "B", line=2.5)
+    p35 = over_prob(dc, "A", "B", line=3.5)
+    assert p15 > p25 > p35
+    tot = np.add.outer(np.arange(n), np.arange(n))
+    assert abs(p25 - M[tot > 2.5].sum()) < 1e-12
+
+
+def test_ledger_backfill():
+    """Old-schema rows (pre bet_type/edge/closing_odds) load with the new
+    columns filled deterministically from the row's own model_p/odds."""
+    import src.models.betting as bet
+
+    old_cols = ["placed_at_utc", "home_team", "away_team", "market",
+                "selection", "decimal_odds", "model_p", "stake"]
+    old = pd.DataFrame([["t", "A", "B", "1X2", "home", 2.0, 0.6, 10],   # +edge
+                        ["t", "A", "B", "1X2", "draw", 3.0, 0.2, 5]],   # -edge
+                       columns=old_cols)
+    orig = bet.LEDGER_PATH
+    tmp = orig.parent / "_test_backfill.csv"
+    try:
+        old.to_csv(tmp, index=False)
+        bet.LEDGER_PATH = tmp
+        out = bet.load_ledger()
+        assert list(out.columns) == LEDGER_COLS
+        assert abs(out.loc[0, "edge"] - 0.2) < 1e-12      # 0.6*2.0 - 1
+        assert out.loc[0, "bet_type"] == "value"
+        assert out.loc[1, "bet_type"] == "hunch"          # 0.2*3.0 - 1 < 0
+        assert out["closing_odds"].isna().all()
+    finally:
+        bet.LEDGER_PATH = orig
+        tmp.unlink(missing_ok=True)
+
+
 def _ledger(rows):
-    return pd.DataFrame(rows, columns=LEDGER_COLS)
+    # Rows are written with the original 8 columns; pad to the current
+    # schema (bet_type/edge/closing_odds) so settlement tests stay terse.
+    base = ["placed_at_utc", "home_team", "away_team", "market", "selection",
+            "decimal_odds", "model_p", "stake"]
+    return pd.DataFrame(rows, columns=base).reindex(columns=LEDGER_COLS)
 
 
 def test_settlement_all_markets():
