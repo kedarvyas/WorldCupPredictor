@@ -7,8 +7,8 @@ Runnable without pytest:
 import numpy as np
 import pandas as pd
 
-from src.models.betting import (LEDGER_COLS, clv, devig, edge, kelly_fraction,
-                                settle)
+from src.models.betting import (LEDGER_COLS, clv, devig, edge, equity_curve,
+                                kelly_fraction, max_drawdown, settle)
 
 
 def test_odds_format_conversion():
@@ -135,6 +135,55 @@ def test_draw_settlement():
                           ["t", "A", "B", "O/U 2.5", "under", 1.8, 0.6, 10]]),
                  {("A", "B"): (1, 1)})
     assert list(out["status"]) == ["won", "won"]
+
+
+def test_new_markets_settlement():
+    # A 2-1 over B: home win, 3 goals, both scored.
+    rows = [
+        ["t", "A", "B", "BTTS", "yes", 1.8, 0.55, 10],          # both scored
+        ["t", "A", "B", "BTTS", "no", 2.0, 0.45, 10],
+        ["t", "A", "B", "Double chance", "1X", 1.3, 0.7, 10],   # home or draw
+        ["t", "A", "B", "Double chance", "X2", 2.5, 0.5, 10],   # draw or away
+        ["t", "A", "B", "Draw no bet", "home", 1.6, 0.6, 10],   # home -> win
+    ]
+    out = settle(_ledger(rows), {("A", "B"): (2, 1)})
+    assert list(out["status"]) == ["won", "lost", "won", "lost", "won"]
+
+
+def test_draw_no_bet_push():
+    # Draw refunds the stake: status push, zero profit; the away DNB on a
+    # 1-0 home win loses as normal.
+    out = settle(_ledger([["t", "A", "B", "Draw no bet", "home", 1.6, 0.6, 10],
+                          ["t", "A", "B", "Draw no bet", "away", 2.4, 0.4, 10]]),
+                 {("A", "B"): (1, 1)})
+    assert list(out["status"]) == ["push", "push"]
+    assert (out["profit"] == 0.0).all()
+    out2 = settle(_ledger([["t", "A", "B", "Draw no bet", "away", 2.4, 0.4, 10]]),
+                  {("A", "B"): (1, 0)})
+    assert out2.loc[0, "status"] == "lost"
+
+
+def test_btts_no_when_blank():
+    # 1-0: BTTS no wins, yes loses.
+    out = settle(_ledger([["t", "A", "B", "BTTS", "yes", 1.8, 0.5, 10],
+                          ["t", "A", "B", "BTTS", "no", 2.0, 0.5, 10]]),
+                 {("A", "B"): (1, 0)})
+    assert list(out["status"]) == ["lost", "won"]
+
+
+def test_equity_curve_and_drawdown():
+    rows = [["t1", "A", "B", "1X2", "home", 2.0, 0.5, 10],   # win  +10
+            ["t2", "A", "C", "1X2", "home", 2.0, 0.5, 10],   # lose -10
+            ["t3", "A", "D", "1X2", "home", 2.0, 0.5, 10]]   # lose -10
+    settled = settle(_ledger(rows),
+                     {("A", "B"): (2, 0), ("A", "C"): (0, 1),
+                      ("A", "D"): (0, 1)})
+    curve = equity_curve(settled)
+    assert list(curve["cum_profit"]) == [10.0, 0.0, -10.0]
+    # Peak +10 then down to -10 -> drawdown -20.
+    assert abs(max_drawdown(curve["cum_profit"]) - (-20.0)) < 1e-12
+    assert max_drawdown([]) == 0.0
+    assert max_drawdown([1.0, 2.0, 3.0]) == 0.0   # monotone up -> no dip
 
 
 if __name__ == "__main__":

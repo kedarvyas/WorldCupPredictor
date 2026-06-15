@@ -131,21 +131,33 @@ def save_closing_odds(updated: pd.DataFrame) -> None:
     updated.reindex(columns=LEDGER_COLS).to_csv(LEDGER_PATH, index=False)
 
 
-def _won(row, gh: int, ga: int) -> bool:
-    if row["market"] == "1X2":
-        actual = "home" if gh > ga else ("away" if ga > gh else "draw")
-        return row["selection"] == actual
-    if row["market"].startswith("O/U "):
-        line = float(row["market"].split()[1])
-        return (gh + ga > line) == (row["selection"] == "over")
-    if row["market"] == "Correct score":
-        return row["selection"] == f"{gh}-{ga}"
-    raise ValueError(f"unknown market {row['market']}")
+def _won(row, gh: int, ga: int):
+    """True (win), False (loss), or None (push — stake returned)."""
+    actual = "home" if gh > ga else ("away" if ga > gh else "draw")
+    mkt, sel = row["market"], row["selection"]
+    if mkt == "1X2":
+        return sel == actual
+    if mkt.startswith("O/U "):
+        line = float(mkt.split()[1])
+        return (gh + ga > line) == (sel == "over")
+    if mkt == "Correct score":
+        return sel == f"{gh}-{ga}"
+    if mkt == "BTTS":
+        return (gh >= 1 and ga >= 1) == (sel == "yes")
+    if mkt == "Double chance":
+        return {"1X": actual in ("home", "draw"),
+                "12": actual in ("home", "away"),
+                "X2": actual in ("draw", "away")}[sel]
+    if mkt == "Draw no bet":
+        if actual == "draw":
+            return None  # stake returned
+        return sel == actual
+    raise ValueError(f"unknown market {mkt}")
 
 
 def settle(ledger: pd.DataFrame, results: dict) -> pd.DataFrame:
     """results: {(home, away): (gh, ga)} of played matches.
-    Adds status (pending/won/lost) and profit columns."""
+    Adds status (pending/won/lost/push) and profit columns."""
     out = ledger.copy()
     status, profit = [], []
     for _, row in out.iterrows():
@@ -155,9 +167,36 @@ def settle(ledger: pd.DataFrame, results: dict) -> pd.DataFrame:
             profit.append(0.0)
             continue
         win = _won(row, *res)
-        status.append("won" if win else "lost")
-        profit.append(row["stake"] * (row["decimal_odds"] - 1.0) if win
-                      else -row["stake"])
+        if win is None:                      # push: stake returned, no P/L
+            status.append("push")
+            profit.append(0.0)
+        elif win:
+            status.append("won")
+            profit.append(row["stake"] * (row["decimal_odds"] - 1.0))
+        else:
+            status.append("lost")
+            profit.append(-row["stake"])
     out["status"] = status
     out["profit"] = profit
     return out
+
+
+def equity_curve(settled: pd.DataFrame) -> pd.DataFrame:
+    """Settled bets in placement order with running cumulative P/L.
+
+    Pushes count (profit 0) so the step count matches the ledger; pending
+    bets are excluded (no P/L yet). Returns the settled rows plus a
+    cum_profit column — the bankroll trajectory."""
+    done = settled[settled["status"].isin(["won", "lost", "push"])].copy()
+    done = done.sort_values("placed_at_utc")
+    done["cum_profit"] = done["profit"].cumsum()
+    return done
+
+
+def max_drawdown(cum_profit) -> float:
+    """Largest peak-to-trough drop in a cumulative-P/L series (<= 0).
+    0.0 for an empty series or one that only ever climbs."""
+    arr = np.asarray(cum_profit, dtype=float)
+    if arr.size == 0:
+        return 0.0
+    return float((arr - np.maximum.accumulate(arr)).min())

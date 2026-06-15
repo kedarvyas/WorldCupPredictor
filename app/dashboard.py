@@ -709,7 +709,8 @@ def view_betting():
 
     from src.models.betting import (LEDGER_PATH, american_to_decimal,
                                     append_bet, clv, decimal_to_american,
-                                    devig, edge, kelly_fraction, load_ledger,
+                                    devig, edge, equity_curve, kelly_fraction,
+                                    load_ledger, max_drawdown,
                                     save_closing_odds, settle)
     from src.models.recalibrate import apply as recal_apply
     from src.models.recalibrate import load_params, over_prob
@@ -781,6 +782,25 @@ def view_betting():
                 else "DC matrix — raw, uncalibrated")
             if ln == balanced:
                 engines[f"O/U {ln}"] += " · ⚖️ balanced line (nearest 50/50)"
+
+        # Derived 1X2 markets — same locked outcome probs as the moneyline.
+        ph, pdr, pa = row["p_home"], row["p_draw"], row["p_away"]
+        markets["Double chance"] = {
+            f"{home} or draw (1X)": ("1X", ph + pdr),
+            "Not draw (12)": ("12", ph + pa),
+            f"draw or {away} (X2)": ("X2", pdr + pa)}
+        engines["Double chance"] = "locked champion forecast"
+        # Draw-no-bet: draw refunds the stake, so price the home/away outcome
+        # conditional on no draw (p / (p_home + p_away)).
+        no_draw = ph + pa
+        markets["Draw no bet"] = {f"{home} (DNB)": ("home", ph / no_draw),
+                                  f"{away} (DNB)": ("away", pa / no_draw)}
+        engines["Draw no bet"] = "locked champion forecast · draw = push"
+        # Both teams to score — goal-level, so from the DC matrix (raw).
+        p_btts = float(1 - M[0, :].sum() - M[:, 0].sum() + M[0, 0])
+        markets["BTTS"] = {"Yes": ("yes", p_btts), "No": ("no", 1 - p_btts)}
+        engines["BTTS"] = "DC matrix — raw, uncalibrated"
+
         markets["Correct score"] = {f"{s}": (s, p) for s, p in flat}
         engines["Correct score"] = "DC matrix — display-grade only"
         entered = []  # (market, label, sel, p, odds, mkt_p) for Best Bets
@@ -814,9 +834,12 @@ def view_betting():
                                 label_visibility="collapsed")
                     legs.append((col, label, sel, p, odds))
 
-                # De-vig only a COMPLETE market (all 1X2 outcomes, both O/U
-                # sides); the top-3 correct scores are a partial set.
-                complete = mkt == "1X2" or mkt.startswith("O/U ")
+                # De-vig only a COMPLETE market whose selections partition the
+                # outcome space and sum to 1 (1X2, both O/U sides, BTTS yes/no,
+                # DNB home/away). Double chance overlaps (sums to 2) and the
+                # top-3 correct scores are partial — leave those un-de-vigged.
+                complete = (mkt in ("1X2", "BTTS", "Draw no bet")
+                            or mkt.startswith("O/U "))
                 mkt_ps = (devig([o for *_, o in legs]) if complete
                           else [None] * len(legs))
 
@@ -946,6 +969,22 @@ def view_betting():
                   help="Record closing odds below to track closing-line "
                        "value — whether you consistently beat the market's "
                        "settling price.")
+
+    # Equity curve: cumulative P/L over settled bets in the order placed —
+    # the bankroll trajectory, plus the worst peak-to-trough dip (drawdown)
+    # the strategy lived through.
+    curve = equity_curve(settled)
+    if len(curve) >= 2:
+        e1, e2 = st.columns([3, 1])
+        with e1:
+            chart = curve.reset_index(drop=True)[["cum_profit"]]
+            chart.index = chart.index + 1          # 1-based bet number
+            chart.index.name = "settled bet #"
+            st.line_chart(chart, y="cum_profit", height=240)
+        e2.metric("Max drawdown", f"{max_drawdown(curve['cum_profit']):+.0f}",
+                  help="Largest peak-to-trough drop in cumulative P/L — the "
+                       "deepest the bankroll fell from a high-water mark. "
+                       "Variance is normal; this sizes it.")
 
     st.dataframe(settled.iloc[::-1], height=320, hide_index=True)
 
