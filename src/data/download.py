@@ -14,7 +14,6 @@ Usage:
 """
 
 import json
-import sys
 from datetime import datetime, timezone
 
 import pandas as pd
@@ -26,17 +25,21 @@ def download() -> None:
     DATA_RAW.mkdir(parents=True, exist_ok=True)
 
     # Import inside the function: the kaggle package authenticates at import
-    # time and exits with an unhelpful error if credentials are missing, so
-    # we guard it.
+    # time and fails with an unhelpful error if credentials are missing, so
+    # we guard it and raise a clear, *catchable* error (not sys.exit, which
+    # raises SystemExit and would hang a long-running caller like the
+    # dashboard instead of surfacing as an error).
     try:
         from kaggle.api.kaggle_api_extended import KaggleApi
-    except OSError as exc:
-        sys.exit(f"Kaggle credentials problem: {exc}\n"
-                 "Create a token at kaggle.com -> Settings -> API and place "
-                 "it at ~/.kaggle/kaggle.json (chmod 600).")
 
-    api = KaggleApi()
-    api.authenticate()
+        api = KaggleApi()
+        api.authenticate()
+    except Exception as exc:
+        raise RuntimeError(
+            f"Kaggle credentials problem: {exc}. Create a token at "
+            "kaggle.com -> Settings -> API and place it at "
+            "~/.kaggle/kaggle.json (chmod 600), or set KAGGLE_USERNAME / "
+            "KAGGLE_KEY in the environment.") from exc
 
     print(f"Downloading {KAGGLE_DATASET} -> {DATA_RAW}")
     api.dataset_download_files(KAGGLE_DATASET, path=str(DATA_RAW), unzip=True)
@@ -58,7 +61,7 @@ def download() -> None:
                 "tournament", "city", "country", "neutral"}
     missing = expected - set(results.columns)
     if missing:
-        sys.exit(f"Schema check FAILED, missing columns: {missing}")
+        raise RuntimeError(f"Schema check FAILED, missing columns: {missing}")
     print("Schema check passed.")
 
 

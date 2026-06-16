@@ -123,13 +123,22 @@ def view_schedule():
                    "Run `python -m src.simulation.fixture_preds` to freeze.")
 
     if st.button("↻ Refresh results from data source"):
-        with st.spinner("Downloading latest results from Kaggle…"):
-            from src.data.clean import clean
-            from src.data.download import download
-            download()
-            clean()
-        st.cache_data.clear()
-        st.rerun()
+        from src.data.clean import clean
+        from src.data.download import download
+        try:
+            with st.spinner("Downloading latest results from Kaggle…"):
+                download()
+                clean()
+        except (Exception, SystemExit) as exc:
+            st.error(
+                f"Refresh failed: {exc}\n\nThis needs Kaggle API credentials "
+                "(`~/.kaggle/kaggle.json` locally, or `KAGGLE_USERNAME` / "
+                "`KAGGLE_KEY` in the cloud app's secrets). Meanwhile, enter "
+                "the score by hand below — it updates every view immediately.")
+        else:
+            st.cache_data.clear()
+            st.success("Results refreshed from the data source.")
+            st.rerun()
 
     with st.expander("✍️ Enter a result manually (upstream data lags live "
                      "matches)"):
