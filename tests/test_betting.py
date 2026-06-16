@@ -104,6 +104,33 @@ def test_ledger_backfill():
         tmp.unlink(missing_ok=True)
 
 
+def test_append_to_old_schema_ledger():
+    """Logging onto a pre-migration (8-column) ledger must rewrite it in the
+    current schema, not append a wider row that corrupts the CSV (the cloud
+    ParserError). Reproduces the bug; passes only with read-normalize-write."""
+    import src.models.betting as bet
+
+    old_cols = ["placed_at_utc", "home_team", "away_team", "market",
+                "selection", "decimal_odds", "model_p", "stake"]
+    old = pd.DataFrame([["t", "A", "B", "1X2", "home", 2.0, 0.6, 10]],
+                       columns=old_cols)
+    orig = bet.LEDGER_PATH
+    tmp = orig.parent / "_test_append.csv"
+    try:
+        old.to_csv(tmp, index=False)
+        bet.LEDGER_PATH = tmp
+        bet.append_bet("C", "D", "1X2", "away", 3.0, 0.3, 5)
+        out = bet.load_ledger()                  # must read without ParserError
+        assert len(out) == 2
+        assert list(out.columns) == LEDGER_COLS
+        assert out.iloc[0]["bet_type"] == "value"      # old row backfilled
+        assert out.iloc[1]["home_team"] == "C"         # new row appended
+        assert abs(out.iloc[1]["edge"] - (0.3 * 3.0 - 1.0)) < 1e-12
+    finally:
+        bet.LEDGER_PATH = orig
+        tmp.unlink(missing_ok=True)
+
+
 def _ledger(rows):
     # Rows are written with the original 8 columns; pad to the current
     # schema (bet_type/edge/closing_odds) so settlement tests stay terse.

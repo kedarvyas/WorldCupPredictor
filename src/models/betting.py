@@ -117,10 +117,14 @@ def append_bet(home, away, market, selection, odds, model_p, stake,
         "model_p": model_p, "stake": float(stake),
         "bet_type": bet_type, "edge": edge_val,
         "closing_odds": float(closing_odds) if closing_odds else np.nan}])
-    header = not LEDGER_PATH.exists()
+    # Read-normalize-write rather than a raw file append: an existing ledger
+    # may still be in an older, narrower schema (pre bet_type/edge/closing_odds).
+    # load_ledger backfills it, so the file is always rewritten with one
+    # consistent header. Appending a wider row to a narrower CSV corrupts it
+    # (the next read_csv throws ParserError).
     LEDGER_PATH.parent.mkdir(exist_ok=True)
-    row.reindex(columns=LEDGER_COLS).to_csv(
-        LEDGER_PATH, mode="a", header=header, index=False)
+    out = pd.concat([load_ledger(), row], ignore_index=True)
+    out.reindex(columns=LEDGER_COLS).to_csv(LEDGER_PATH, index=False)
 
 
 def save_closing_odds(updated: pd.DataFrame) -> None:
