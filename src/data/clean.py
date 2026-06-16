@@ -57,6 +57,55 @@ def apply_manual_results(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
+def add_manual_result(home: str, away: str, home_score: int,
+                      away_score: int) -> pd.DataFrame:
+    """Record a final score and reflect it immediately, WITHOUT the raw
+    Kaggle pipeline (which isn't present on the cloud deploy — data/raw is
+    not committed). Appends to the manual overlay (audit trail; also re-
+    applied by clean() on a local refresh) and overlays the score directly
+    onto the committed data/processed/matches.csv.
+
+    Note: on Streamlit Cloud the processed file is on an ephemeral disk, so a
+    manual entry survives the session but not a redeploy."""
+    rec = pd.DataFrame([{"home_team": home, "away_team": away,
+                         "home_score": int(home_score),
+                         "away_score": int(away_score)}])
+    MANUAL_RESULTS.parent.mkdir(parents=True, exist_ok=True)
+    rec.to_csv(MANUAL_RESULTS, mode="a", index=False,
+               header=not MANUAL_RESULTS.exists())
+
+    # The fixture identifies the exact match: the same two teams have met
+    # historically, so we must scope by date + tournament, not team names
+    # alone, or we'd overwrite an old friendly's score.
+    fx = pd.read_csv(FIXTURES_FROZEN)
+    frow = fx[(fx["home_team"] == home) & (fx["away_team"] == away)]
+    if frow.empty:
+        raise ValueError(f"{home} vs {away} not in frozen fixtures")
+    fixture = frow.iloc[[0]].copy()
+    fixture["date"] = pd.to_datetime(fixture["date"])
+
+    matches = pd.read_csv(DATA_PROCESSED / "matches.csv")
+    matches = matches.drop(columns="match_id", errors="ignore")
+    matches["date"] = pd.to_datetime(matches["date"])
+    mask = ((matches["home_team"] == home) & (matches["away_team"] == away)
+            & (matches["date"] == fixture["date"].iloc[0])
+            & (matches["tournament"] == "FIFA World Cup"))
+    if mask.any():
+        matches.loc[mask, ["home_score", "away_score"]] = [float(home_score),
+                                                           float(away_score)]
+    else:
+        fixture[["home_score", "away_score"]] = [float(home_score),
+                                                 float(away_score)]
+        matches = pd.concat([matches, fixture], ignore_index=True)
+
+    # Re-sort and re-id exactly as clean() does, so downstream joins hold.
+    matches = matches.sort_values(["date", "home_team"]).reset_index(drop=True)
+    matches["date"] = matches["date"].dt.strftime("%Y-%m-%d")
+    matches.index.name = "match_id"
+    matches.to_csv(DATA_PROCESSED / "matches.csv")
+    return matches
+
+
 def clean() -> pd.DataFrame:
     df = pd.read_csv(DATA_RAW / "results.csv", parse_dates=["date"])
     df = apply_manual_results(df)

@@ -160,15 +160,15 @@ def view_schedule():
         ga = c3.number_input("Away", min_value=0, max_value=15, value=0)
         if c4.button("Save", type="primary"):
             home, away = label.split(" vs ")
-            from src.data.clean import MANUAL_RESULTS, clean
-            row = pd.DataFrame([{"home_team": home, "away_team": away,
-                                 "home_score": int(gh),
-                                 "away_score": int(ga)}])
-            row.to_csv(MANUAL_RESULTS, mode="a", index=False,
-                       header=not MANUAL_RESULTS.exists())
-            clean()
-            st.cache_data.clear()
-            st.rerun()
+            from src.data.clean import add_manual_result
+            try:
+                add_manual_result(home, away, int(gh), int(ga))
+            except Exception as exc:
+                st.error(f"Could not save result: {exc}")
+            else:
+                st.cache_data.clear()
+                st.success(f"Saved {home} {int(gh)}–{int(ga)} {away}.")
+                st.rerun()
 
     res = wc2026_results()
     fx = locked.merge(res, on=["home_team", "away_team"], how="left")
