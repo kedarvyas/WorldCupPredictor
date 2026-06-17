@@ -217,3 +217,18 @@ def max_drawdown(cum_profit) -> float:
     if arr.size == 0:
         return 0.0
     return float((arr - np.maximum.accumulate(arr)).min())
+
+
+def open_exposure(settled: pd.DataFrame) -> dict:
+    """Risk carried by still-pending bets: how many, total stake at risk
+    (the most they can lose), and combined profit if they all win.
+
+    Potential profit ignores correlation — open legs on the same match can't
+    all win — so it's an upper bound, not an expectation."""
+    pend = settled[settled["status"] == "pending"]
+    return {
+        "n": int(len(pend)),
+        "at_risk": float(pend["stake"].sum()),
+        "potential_profit": float(
+            (pend["stake"] * (pend["decimal_odds"] - 1.0)).sum()),
+    }

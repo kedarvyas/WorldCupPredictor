@@ -719,7 +719,7 @@ def view_betting():
     from src.models.betting import (LEDGER_PATH, american_to_decimal,
                                     append_bet, clv, decimal_to_american,
                                     devig, edge, equity_curve, kelly_fraction,
-                                    load_ledger, max_drawdown,
+                                    load_ledger, max_drawdown, open_exposure,
                                     save_closing_odds, settle)
     from src.models.recalibrate import apply as recal_apply
     from src.models.recalibrate import load_params, over_prob
@@ -945,6 +945,20 @@ def view_betting():
               help="Break-even means the model roughly priced the matches "
                    "as well as your book net of its margin — already a "
                    "strong result for a results-only model.")
+
+    # Open risk: the settled metrics ignore unsettled bets, so show the stake
+    # currently exposed and the upside still live.
+    exp = open_exposure(settled)
+    if exp["n"]:
+        o1, o2, o3 = st.columns(3)
+        o1.metric("Open bets", exp["n"])
+        o2.metric("At risk", f"{exp['at_risk']:.0f}",
+                  help="Total stake on unsettled bets — the most these open "
+                       "positions can lose.")
+        o3.metric("Potential profit", f"+{exp['potential_profit']:.0f}",
+                  help="Combined profit if every open bet wins. Ignores "
+                       "correlation (legs on the same match can't all win), "
+                       "so it's an upper bound, not an expectation.")
 
     # Segment value (model-advised) from hunch (logged against advice) so the
     # one question that matters — did following the model's edges pay? — is

@@ -8,7 +8,8 @@ import numpy as np
 import pandas as pd
 
 from src.models.betting import (LEDGER_COLS, clv, devig, edge, equity_curve,
-                                kelly_fraction, max_drawdown, settle)
+                                kelly_fraction, max_drawdown, open_exposure,
+                                settle)
 
 
 def test_odds_format_conversion():
@@ -234,6 +235,24 @@ def test_equity_curve_and_drawdown():
     assert abs(max_drawdown(curve["cum_profit"]) - (-20.0)) < 1e-12
     assert max_drawdown([]) == 0.0
     assert max_drawdown([1.0, 2.0, 3.0]) == 0.0   # monotone up -> no dip
+
+
+def test_open_exposure():
+    # One settled (excluded) + two pending bets at risk.
+    rows = [["t", "A", "B", "1X2", "home", 2.0, 0.5, 10],   # settled, excluded
+            ["t", "C", "D", "1X2", "home", 3.0, 0.4, 20],   # pending
+            ["t", "E", "F", "O/U 2.5", "over", 1.5, 0.6, 40]]  # pending
+    settled = settle(_ledger(rows), {("A", "B"): (2, 0)})
+    exp = open_exposure(settled)
+    assert exp["n"] == 2
+    assert abs(exp["at_risk"] - 60.0) < 1e-12              # 20 + 40
+    # 20*(3-1) + 40*(1.5-1) = 40 + 20
+    assert abs(exp["potential_profit"] - 60.0) < 1e-12
+    # No pending bets -> zeros.
+    alldone = settle(_ledger([["t", "A", "B", "1X2", "home", 2.0, 0.5, 10]]),
+                     {("A", "B"): (2, 0)})
+    assert open_exposure(alldone) == {"n": 0, "at_risk": 0.0,
+                                      "potential_profit": 0.0}
 
 
 if __name__ == "__main__":
