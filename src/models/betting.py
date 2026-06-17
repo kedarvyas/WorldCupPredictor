@@ -92,10 +92,23 @@ def clv(placed_odds: float, closing_odds: float) -> float:
 def load_ledger() -> pd.DataFrame:
     """Load the ledger, backfilling columns added after early rows were
     written. edge and bet_type are recomputed deterministically from the
-    bet's own model_p/odds; closing_odds stays blank until recorded."""
+    bet's own model_p/odds; closing_odds stays blank until recorded.
+
+    Defensive: a malformed CSV (e.g. a row corrupted by an older append bug,
+    possibly restored from a gist) is salvaged by skipping unparseable rows
+    rather than crashing the whole page; a totally unreadable file falls back
+    to an empty ledger."""
     if not LEDGER_PATH.exists():
         return pd.DataFrame(columns=LEDGER_COLS)
-    df = pd.read_csv(LEDGER_PATH)
+    try:
+        df = pd.read_csv(LEDGER_PATH)
+    except pd.errors.EmptyDataError:
+        return pd.DataFrame(columns=LEDGER_COLS)
+    except pd.errors.ParserError:
+        try:
+            df = pd.read_csv(LEDGER_PATH, on_bad_lines="skip")
+        except Exception:
+            return pd.DataFrame(columns=LEDGER_COLS)
     if "edge" not in df.columns:
         df["edge"] = df["model_p"] * df["decimal_odds"] - 1.0
     if "bet_type" not in df.columns:

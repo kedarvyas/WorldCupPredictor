@@ -131,6 +131,29 @@ def test_append_to_old_schema_ledger():
         tmp.unlink(missing_ok=True)
 
 
+def test_corrupt_ledger_is_salvaged():
+    """A malformed ledger (a wide row from an old append bug) must not crash
+    load_ledger — the readable rows survive, the bad one is skipped."""
+    import src.models.betting as bet
+
+    orig = bet.LEDGER_PATH
+    tmp = orig.parent / "_test_corrupt.csv"
+    try:
+        # Valid 11-col header + one good row, then a row with too many fields.
+        tmp.write_text(
+            ",".join(LEDGER_COLS) + "\n"
+            "t,A,B,1X2,home,2.0,0.6,10,value,0.2,\n"
+            "t,A,B,1X2,away,2.0,0.4,10,hunch,-0.2,,EXTRA,FIELDS\n")
+        bet.LEDGER_PATH = tmp
+        out = bet.load_ledger()                  # must not raise ParserError
+        assert list(out.columns) == LEDGER_COLS
+        assert len(out) >= 1
+        assert out.iloc[0]["home_team"] == "A"
+    finally:
+        bet.LEDGER_PATH = orig
+        tmp.unlink(missing_ok=True)
+
+
 def _ledger(rows):
     # Rows are written with the original 8 columns; pad to the current
     # schema (bet_type/edge/closing_odds) so settlement tests stay terse.
